@@ -1,13 +1,16 @@
 <?php
 class Session {
     private static $instance = null;
-    private $logger;
+    private $config;
 
     private function __construct() {
-        $this->logger = Logger::getInstance();
+        $this->config = require __DIR__ . '/../config/config.php';
         $this->start();
     }
 
+    /**
+     * Get Session instance (Singleton)
+     */
     public static function getInstance() {
         if (self::$instance === null) {
             self::$instance = new self();
@@ -16,30 +19,24 @@ class Session {
     }
 
     /**
-     * Start the session securely
+     * Start the session with secure configuration
      */
     private function start() {
         if (session_status() === PHP_SESSION_NONE) {
             // Set secure session parameters
-            ini_set('session.cookie_httponly', 1);
-            ini_set('session.use_only_cookies', 1);
-            ini_set('session.cookie_secure', isset($_SERVER['HTTPS']));
-            ini_set('session.cookie_samesite', 'Strict');
-            ini_set('session.gc_maxlifetime', 3600); // 1 hour
-            ini_set('session.cookie_lifetime', 0); // Until browser closes
+            ini_set('session.cookie_httponly', $this->config['session_http_only']);
+            ini_set('session.cookie_secure', $this->config['session_secure']);
+            ini_set('session.gc_maxlifetime', $this->config['session_lifetime']);
+            ini_set('session.use_strict_mode', 1);
+            ini_set('session.cookie_samesite', 'Lax');
 
-            // Start session
             session_start();
 
             // Regenerate session ID periodically
             if (!isset($_SESSION['last_regeneration'])) {
-                $this->regenerate();
-            } else {
-                // Regenerate session ID every 30 minutes
-                $regeneration_time = 30 * 60;
-                if (time() - $_SESSION['last_regeneration'] > $regeneration_time) {
-                    $this->regenerate();
-                }
+                $this->regenerateId();
+            } else if (time() - $_SESSION['last_regeneration'] > 1800) { // 30 minutes
+                $this->regenerateId();
             }
         }
     }
@@ -47,7 +44,7 @@ class Session {
     /**
      * Regenerate session ID
      */
-    public function regenerate() {
+    public function regenerateId() {
         session_regenerate_id(true);
         $_SESSION['last_regeneration'] = time();
     }
@@ -67,13 +64,6 @@ class Session {
     }
 
     /**
-     * Check if a session key exists
-     */
-    public function has($key) {
-        return isset($_SESSION[$key]);
-    }
-
-    /**
      * Remove a session value
      */
     public function remove($key) {
@@ -85,12 +75,19 @@ class Session {
     }
 
     /**
+     * Check if a session value exists
+     */
+    public function has($key) {
+        return isset($_SESSION[$key]);
+    }
+
+    /**
      * Clear all session data
      */
     public function clear() {
         session_unset();
         session_destroy();
-        $this->start();
+        setcookie(session_name(), '', time() - 3600, '/');
     }
 
     /**
@@ -133,15 +130,14 @@ class Session {
     /**
      * Set user data in session
      */
-    public function setUser($userData) {
-        $this->set('user', $userData);
-        $this->set('user_ip', $_SERVER['REMOTE_ADDR']);
-        $this->set('user_agent', $_SERVER['HTTP_USER_AGENT']);
-        $this->logger->info('User session created', ['user_id' => $userData['id']]);
+    public function setUser($user) {
+        $this->set('user', $user);
+        $this->set('user_id', $user['id']);
+        $this->set('last_activity', time());
     }
 
     /**
-     * Get user data from session
+     * Get logged in user data
      */
     public function getUser() {
         return $this->get('user');
@@ -151,50 +147,7 @@ class Session {
      * Check if user is logged in
      */
     public function isLoggedIn() {
-        if (!$this->has('user')) {
-            return false;
-        }
-
-        // Verify IP and user agent haven't changed
-        if ($this->get('user_ip') !== $_SERVER['REMOTE_ADDR'] ||
-            $this->get('user_agent') !== $_SERVER['HTTP_USER_AGENT']) {
-            $this->logger->warning('Session security check failed', [
-                'user_id' => $this->get('user')['id'],
-                'ip_mismatch' => $this->get('user_ip') !== $_SERVER['REMOTE_ADDR'],
-                'agent_mismatch' => $this->get('user_agent') !== $_SERVER['HTTP_USER_AGENT']
-            ]);
-            $this->clear();
-            return false;
-        }
-
-        return true;
-    }
-
-    /**
-     * Log out user
-     */
-    public function logout() {
-        if ($this->has('user')) {
-            $userId = $this->get('user')['id'];
-            $this->clear();
-            $this->logger->info('User logged out', ['user_id' => $userId]);
-        }
-    }
-
-    /**
-     * Set CSRF token
-     */
-    public function setCsrfToken() {
-        $token = bin2hex(random_bytes(32));
-        $this->set('csrf_token', $token);
-        return $token;
-    }
-
-    /**
-     * Verify CSRF token
-     */
-    public function verifyCsrfToken($token) {
-        return hash_equals($this->get('csrf_token', ''), $token);
+        return $this->has('user') && $this->has('user_id');
     }
 
     /**
@@ -204,7 +157,7 @@ class Session {
         $this->set('remember_token', [
             'user_id' => $userId,
             'token' => $token,
-            'expiry' => time() + (30 * 24 * 60 * 60) // 30 days
+            'created_at' => time()
         ]);
     }
 
@@ -212,40 +165,48 @@ class Session {
      * Get remember me token
      */
     public function getRememberToken() {
-        $token = $this->get('remember_token');
-        if ($token && time() > $token['expiry']) {
-            $this->remove('remember_token');
-            return null;
+        return $this->get('remember_token');
+    }
+
+    /**
+     * Check session timeout
+     */
+    public function checkTimeout() {
+        if ($this->isLoggedIn()) {
+            $lastActivity = $this->get('last_activity');
+            if (time() - $lastActivity > $this->config['session_lifetime']) {
+                $this->clear();
+                return true;
+            }
+            $this->set('last_activity', time());
         }
-        return $token;
+        return false;
     }
 
     /**
-     * Set session timeout
+     * Get CSRF token
      */
-    public function setTimeout($minutes) {
-        ini_set('session.gc_maxlifetime', $minutes * 60);
-        session_set_cookie_params($minutes * 60);
+    public function getCsrfToken() {
+        if (!$this->has('csrf_token')) {
+            $this->set('csrf_token', bin2hex(random_bytes(32)));
+        }
+        return $this->get('csrf_token');
     }
 
     /**
-     * Get session ID
+     * Verify CSRF token
      */
-    public function getId() {
-        return session_id();
+    public function verifyCsrfToken($token) {
+        return hash_equals($this->getCsrfToken(), $token);
     }
 
     /**
-     * Get all session data
+     * Prevent cloning of the instance (Singleton)
      */
-    public function all() {
-        return $_SESSION;
-    }
+    private function __clone() {}
 
     /**
-     * Check session validity
+     * Prevent unserializing of the instance (Singleton)
      */
-    public function isValid() {
-        return session_status() === PHP_SESSION_ACTIVE;
-    }
+    private function __wakeup() {}
 }
