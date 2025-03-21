@@ -1,6 +1,4 @@
 <?php
-require_once __DIR__ . '/Model.php';
-
 class Campaign extends Model {
     protected $table = 'campaigns';
     protected $fillable = [
@@ -21,275 +19,248 @@ class Campaign extends Model {
      * Get active campaigns
      */
     public function getActive($page = 1, $perPage = 10) {
-        try {
-            return $this->paginate($page, $perPage, [
-                'status' => 'active',
-                'end_date >= ?' => date('Y-m-d')
-            ], 'end_date', 'ASC');
-        } catch (Exception $e) {
-            error_log("Get Active Campaigns Error: " . $e->getMessage());
-            throw new Exception("Failed to get active campaigns");
-        }
-    }
+        $offset = ($page - 1) * $perPage;
+        
+        $sql = "SELECT c.*, cat.name as category_name, u.full_name as creator_name 
+                FROM {$this->table} c 
+                LEFT JOIN categories cat ON c.category_id = cat.id 
+                LEFT JOIN users u ON c.created_by = u.id 
+                WHERE c.status = 'active' 
+                AND c.end_date >= CURRENT_DATE 
+                ORDER BY c.created_at DESC 
+                LIMIT ? OFFSET ?";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$perPage, $offset]);
+        $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    /**
-     * Create a new campaign
-     */
-    public function createCampaign($data) {
-        try {
-            if (empty($data['slug'])) {
-                $data['slug'] = Utility::generateSlug($data['title']);
-            }
+        // Get total count for pagination
+        $countSql = "SELECT COUNT(*) as count 
+                     FROM {$this->table} 
+                     WHERE status = 'active' 
+                     AND end_date >= CURRENT_DATE";
+        $stmt = $this->db->prepare($countSql);
+        $stmt->execute();
+        $total = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
-            // Validate amounts
-            if (!is_numeric($data['goal_amount']) || $data['goal_amount'] <= 0) {
-                throw new Exception("Invalid goal amount");
-            }
-
-            // Set initial current amount
-            $data['current_amount'] = 0;
-
-            // Validate dates
-            if (strtotime($data['end_date']) < strtotime($data['start_date'])) {
-                throw new Exception("End date cannot be before start date");
-            }
-
-            // Set initial status
-            if (empty($data['status'])) {
-                $now = time();
-                $startTime = strtotime($data['start_date']);
-                
-                if ($now < $startTime) {
-                    $data['status'] = 'pending';
-                } else {
-                    $data['status'] = 'active';
-                }
-            }
-
-            return $this->create($data);
-        } catch (Exception $e) {
-            error_log("Create Campaign Error: " . $e->getMessage());
-            throw new Exception($e->getMessage());
-        }
-    }
-
-    /**
-     * Update a campaign
-     */
-    public function updateCampaign($id, $data) {
-        try {
-            if (!empty($data['title'])) {
-                $data['slug'] = Utility::generateSlug($data['title']);
-            }
-
-            // Validate goal amount if provided
-            if (isset($data['goal_amount']) && (!is_numeric($data['goal_amount']) || $data['goal_amount'] <= 0)) {
-                throw new Exception("Invalid goal amount");
-            }
-
-            // Validate dates if both are provided
-            if (!empty($data['start_date']) && !empty($data['end_date'])) {
-                if (strtotime($data['end_date']) < strtotime($data['start_date'])) {
-                    throw new Exception("End date cannot be before start date");
-                }
-            }
-
-            return $this->update($id, $data);
-        } catch (Exception $e) {
-            error_log("Update Campaign Error: " . $e->getMessage());
-            throw new Exception($e->getMessage());
-        }
-    }
-
-    /**
-     * Update campaign amount
-     */
-    public function updateAmount($id, $amount) {
-        try {
-            $campaign = $this->find($id);
-            if (!$campaign) {
-                throw new Exception("Campaign not found");
-            }
-
-            $newAmount = $campaign['current_amount'] + $amount;
-            return $this->update($id, ['current_amount' => $newAmount]);
-        } catch (Exception $e) {
-            error_log("Update Campaign Amount Error: " . $e->getMessage());
-            throw new Exception("Failed to update campaign amount");
-        }
-    }
-
-    /**
-     * Get campaign with full details
-     */
-    public function getCampaignWithDetails($id) {
-        try {
-            $sql = "SELECT c.*, 
-                           cat.name as category_name,
-                           cat.slug as category_slug,
-                           u.username as creator_name,
-                           u.email as creator_email
-                    FROM {$this->table} c
-                    LEFT JOIN categories cat ON c.category_id = cat.id
-                    LEFT JOIN users u ON c.created_by = u.id
-                    WHERE c.id = ?";
-            
-            $this->db->query($sql, [$id]);
-            return $this->db->findOne();
-        } catch (Exception $e) {
-            error_log("Get Campaign Details Error: " . $e->getMessage());
-            throw new Exception("Failed to get campaign details");
-        }
-    }
-
-    /**
-     * Get campaign by slug
-     */
-    public function getBySlug($slug) {
-        try {
-            $sql = "SELECT c.*, 
-                           cat.name as category_name,
-                           cat.slug as category_slug,
-                           u.username as creator_name
-                    FROM {$this->table} c
-                    LEFT JOIN categories cat ON c.category_id = cat.id
-                    LEFT JOIN users u ON c.created_by = u.id
-                    WHERE c.slug = ?";
-            
-            $this->db->query($sql, [$slug]);
-            return $this->db->findOne();
-        } catch (Exception $e) {
-            error_log("Get Campaign By Slug Error: " . $e->getMessage());
-            throw new Exception("Failed to get campaign by slug");
-        }
-    }
-
-    /**
-     * Get campaigns by category
-     */
-    public function getByCategory($categoryId, $page = 1, $perPage = 10) {
-        try {
-            return $this->paginate($page, $perPage, [
-                'category_id' => $categoryId,
-                'status' => 'active',
-                'end_date >= ?' => date('Y-m-d')
-            ], 'end_date', 'ASC');
-        } catch (Exception $e) {
-            error_log("Get Campaigns By Category Error: " . $e->getMessage());
-            throw new Exception("Failed to get campaigns by category");
-        }
-    }
-
-    /**
-     * Get campaign statistics
-     */
-    public function getStatistics() {
-        try {
-            $stats = [
-                'total' => $this->count(),
-                'active' => $this->count([
-                    'status' => 'active',
-                    'end_date >= ?' => date('Y-m-d')
-                ]),
-                'completed' => $this->count([
-                    'status' => 'completed'
-                ]),
-                'pending' => $this->count([
-                    'status' => 'pending'
-                ])
-            ];
-
-            // Get total amounts
-            $sql = "SELECT 
-                        SUM(goal_amount) as total_goal,
-                        SUM(current_amount) as total_raised
-                    FROM {$this->table}";
-            
-            $this->db->query($sql);
-            $amounts = $this->db->findOne();
-            $stats['total_goal'] = $amounts['total_goal'] ?? 0;
-            $stats['total_raised'] = $amounts['total_raised'] ?? 0;
-
-            // Get campaigns by category
-            $sql = "SELECT c.name, 
-                           COUNT(*) as campaign_count,
-                           SUM(cam.current_amount) as amount_raised
-                    FROM categories c
-                    LEFT JOIN {$this->table} cam ON c.id = cam.category_id
-                    WHERE c.module = 'campaigns'
-                    GROUP BY c.id";
-            
-            $this->db->query($sql);
-            $stats['by_category'] = $this->db->findAll();
-
-            return $stats;
-        } catch (Exception $e) {
-            error_log("Get Campaign Statistics Error: " . $e->getMessage());
-            throw new Exception("Failed to get campaign statistics");
-        }
-    }
-
-    /**
-     * Search campaigns
-     */
-    public function searchCampaigns($searchTerm, $page = 1, $perPage = 10) {
-        try {
-            return $this->search(['title', 'description'], $searchTerm, $page, $perPage);
-        } catch (Exception $e) {
-            error_log("Search Campaigns Error: " . $e->getMessage());
-            throw new Exception("Failed to search campaigns");
-        }
+        return [
+            'data' => $data,
+            'total' => $total,
+            'per_page' => $perPage,
+            'current_page' => $page,
+            'last_page' => ceil($total / $perPage)
+        ];
     }
 
     /**
      * Get featured campaigns
      */
     public function getFeatured($limit = 3) {
-        try {
-            $sql = "SELECT c.*, 
-                           cat.name as category_name,
-                           (c.current_amount / c.goal_amount * 100) as progress
-                    FROM {$this->table} c
-                    LEFT JOIN categories cat ON c.category_id = cat.id
-                    WHERE c.status = 'active'
-                    AND c.end_date >= CURRENT_DATE
-                    AND c.featured_image IS NOT NULL
-                    ORDER BY progress DESC
-                    LIMIT ?";
-            
-            $this->db->query($sql, [$limit]);
-            return $this->db->findAll();
-        } catch (Exception $e) {
-            error_log("Get Featured Campaigns Error: " . $e->getMessage());
-            throw new Exception("Failed to get featured campaigns");
-        }
+        $sql = "SELECT c.*, cat.name as category_name, u.full_name as creator_name 
+                FROM {$this->table} c 
+                LEFT JOIN categories cat ON c.category_id = cat.id 
+                LEFT JOIN users u ON c.created_by = u.id 
+                WHERE c.status = 'active' 
+                AND c.end_date >= CURRENT_DATE 
+                AND c.is_featured = 1 
+                ORDER BY c.created_at DESC 
+                LIMIT ?";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$limit]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     /**
-     * Update campaign statuses
+     * Get campaign by slug
      */
-    public function updateCampaignStatuses() {
-        try {
-            $now = date('Y-m-d');
-            
-            // Update to active
-            $sql = "UPDATE {$this->table} 
-                    SET status = 'active' 
-                    WHERE status = 'pending' 
-                    AND start_date <= ?";
-            $this->db->query($sql, [$now]);
-            
-            // Update to completed
-            $sql = "UPDATE {$this->table} 
-                    SET status = 'completed' 
-                    WHERE status = 'active' 
-                    AND (end_date < ? OR current_amount >= goal_amount)";
-            $this->db->query($sql, [$now]);
-            
-            return true;
-        } catch (Exception $e) {
-            error_log("Update Campaign Statuses Error: " . $e->getMessage());
-            throw new Exception("Failed to update campaign statuses");
+    public function getBySlug($slug) {
+        $sql = "SELECT c.*, cat.name as category_name, u.full_name as creator_name 
+                FROM {$this->table} c 
+                LEFT JOIN categories cat ON c.category_id = cat.id 
+                LEFT JOIN users u ON c.created_by = u.id 
+                WHERE c.slug = ?";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$slug]);
+        return $stmt->fetch(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Update campaign amount
+     */
+    public function updateAmount($id, $amount) {
+        $sql = "UPDATE {$this->table} 
+                SET current_amount = current_amount + ? 
+                WHERE id = ?";
+        
+        $stmt = $this->db->prepare($sql);
+        return $stmt->execute([$amount, $id]);
+    }
+
+    /**
+     * Get campaign statistics
+     */
+    public function getStatistics() {
+        $stats = [
+            'total_campaigns' => 0,
+            'active_campaigns' => 0,
+            'total_raised' => 0,
+            'average_donation' => 0,
+            'by_category' => [],
+            'by_month' => [],
+            'success_rate' => 0
+        ];
+
+        // Get basic counts
+        $sql = "SELECT 
+                COUNT(*) as total_campaigns,
+                SUM(CASE WHEN status = 'active' AND end_date >= CURRENT_DATE THEN 1 ELSE 0 END) as active_campaigns,
+                SUM(current_amount) as total_raised,
+                SUM(CASE WHEN current_amount >= goal_amount THEN 1 ELSE 0 END) as successful_campaigns
+                FROM {$this->table}";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $basic = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        $stats['total_campaigns'] = $basic['total_campaigns'];
+        $stats['active_campaigns'] = $basic['active_campaigns'];
+        $stats['total_raised'] = $basic['total_raised'];
+        $stats['success_rate'] = $basic['total_campaigns'] > 0 
+            ? ($basic['successful_campaigns'] / $basic['total_campaigns']) * 100 
+            : 0;
+
+        // Get average donation
+        $sql = "SELECT AVG(amount) as average 
+                FROM donations d 
+                JOIN {$this->table} c ON d.campaign_id = c.id 
+                WHERE d.status = 'completed'";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['average_donation'] = $stmt->fetch(PDO::FETCH_ASSOC)['average'] ?? 0;
+
+        // Get counts by category
+        $sql = "SELECT cat.name, COUNT(*) as count, SUM(c.current_amount) as amount 
+                FROM {$this->table} c 
+                LEFT JOIN categories cat ON c.category_id = cat.id 
+                GROUP BY cat.name";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['by_category'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // Get amounts by month
+        $sql = "SELECT DATE_FORMAT(created_at, '%Y-%m') as month, 
+                COUNT(*) as campaigns,
+                SUM(current_amount) as amount 
+                FROM {$this->table} 
+                GROUP BY month 
+                ORDER BY month DESC 
+                LIMIT 12";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['by_month'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        return $stats;
+    }
+
+    /**
+     * Get campaign donors
+     */
+    public function getDonors($campaignId, $limit = null) {
+        $sql = "SELECT d.*, u.full_name, u.email 
+                FROM donations d 
+                LEFT JOIN users u ON d.user_id = u.id 
+                WHERE d.campaign_id = ? AND d.status = 'completed' 
+                ORDER BY d.amount DESC";
+        
+        if ($limit) {
+            $sql .= " LIMIT ?";
         }
+
+        $stmt = $this->db->prepare($sql);
+        $params = [$campaignId];
+        if ($limit) {
+            $params[] = $limit;
+        }
+        
+        $stmt->execute($params);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Get campaign progress
+     */
+    public function getProgress($campaignId) {
+        $campaign = $this->find($campaignId);
+        if (!$campaign) {
+            return 0;
+        }
+
+        return [
+            'current' => $campaign['current_amount'],
+            'goal' => $campaign['goal_amount'],
+            'percentage' => ($campaign['current_amount'] / $campaign['goal_amount']) * 100,
+            'remaining' => $campaign['goal_amount'] - $campaign['current_amount'],
+            'days_left' => max(0, ceil((strtotime($campaign['end_date']) - time()) / 86400))
+        ];
+    }
+
+    /**
+     * Get similar campaigns
+     */
+    public function getSimilar($campaignId, $limit = 3) {
+        $campaign = $this->find($campaignId);
+        if (!$campaign) {
+            return [];
+        }
+
+        $sql = "SELECT c.*, cat.name as category_name 
+                FROM {$this->table} c 
+                LEFT JOIN categories cat ON c.category_id = cat.id 
+                WHERE c.id != ? 
+                AND c.category_id = ? 
+                AND c.status = 'active' 
+                AND c.end_date >= CURRENT_DATE 
+                ORDER BY c.created_at DESC 
+                LIMIT ?";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$campaignId, $campaign['category_id'], $limit]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Check if campaign is active
+     */
+    public function isActive($campaignId) {
+        $campaign = $this->find($campaignId);
+        if (!$campaign) {
+            return false;
+        }
+
+        return $campaign['status'] === 'active' && 
+               strtotime($campaign['end_date']) >= time();
+    }
+
+    /**
+     * Get top campaigns
+     */
+    public function getTopCampaigns($limit = 5) {
+        $sql = "SELECT c.*, cat.name as category_name,
+                (c.current_amount / c.goal_amount * 100) as progress 
+                FROM {$this->table} c 
+                LEFT JOIN categories cat ON c.category_id = cat.id 
+                WHERE c.status = 'active' 
+                AND c.end_date >= CURRENT_DATE 
+                ORDER BY progress DESC 
+                LIMIT ?";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$limit]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 }
