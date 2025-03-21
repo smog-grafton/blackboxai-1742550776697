@@ -1,174 +1,190 @@
 <?php
-require_once __DIR__ . '/Model.php';
-
 class Category extends Model {
     protected $table = 'categories';
     protected $fillable = [
         'name',
         'slug',
         'description',
-        'parent_id',
-        'module'
+        'module',
+        'parent_id'
     ];
 
     /**
-     * Get category tree structure
+     * Get categories by module
      */
-    public function getTree($module = null) {
-        try {
-            $conditions = ['parent_id' => null];
-            if ($module) {
-                $conditions['module'] = $module;
-            }
-            
-            $categories = $this->findBy(array_keys($conditions)[0], array_values($conditions)[0]);
-            return $this->buildTree($categories);
-        } catch (Exception $e) {
-            error_log("Get Category Tree Error: " . $e->getMessage());
-            throw new Exception("Failed to get category tree");
-        }
+    public function getByModule($module) {
+        $sql = "SELECT * FROM {$this->table} WHERE module = ? ORDER BY name ASC";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$module]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     /**
-     * Build hierarchical tree structure
+     * Get category with its parent
      */
-    private function buildTree($categories) {
-        $tree = [];
-        
-        foreach ($categories as $category) {
-            $category['children'] = $this->getChildren($category['id']);
-            $tree[] = $category;
-        }
-        
-        return $tree;
+    public function getWithParent($id) {
+        $sql = "SELECT c.*, p.name as parent_name 
+                FROM {$this->table} c 
+                LEFT JOIN {$this->table} p ON c.parent_id = p.id 
+                WHERE c.id = ?";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$id]);
+        return $stmt->fetch(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Get category by slug
+     */
+    public function getBySlug($slug) {
+        $sql = "SELECT * FROM {$this->table} WHERE slug = ?";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$slug]);
+        return $stmt->fetch(PDO::FETCH_ASSOC);
     }
 
     /**
      * Get child categories
      */
     public function getChildren($parentId) {
-        try {
-            $children = $this->findBy('parent_id', $parentId);
-            
-            foreach ($children as &$child) {
-                $child['children'] = $this->getChildren($child['id']);
-            }
-            
-            return $children;
-        } catch (Exception $e) {
-            error_log("Get Children Error: " . $e->getMessage());
-            throw new Exception("Failed to get child categories");
-        }
+        $sql = "SELECT * FROM {$this->table} WHERE parent_id = ? ORDER BY name ASC";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$parentId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     /**
-     * Get parent category
+     * Get category tree
      */
-    public function getParent($categoryId) {
-        try {
-            $category = $this->find($categoryId);
-            if ($category && $category['parent_id']) {
-                return $this->find($category['parent_id']);
+    public function getTree($module = null) {
+        $where = $module ? "WHERE module = ?" : "";
+        $params = $module ? [$module] : [];
+        
+        $sql = "SELECT * FROM {$this->table} $where ORDER BY parent_id, name";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        $categories = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        return $this->buildTree($categories);
+    }
+
+    /**
+     * Build category tree from flat array
+     */
+    private function buildTree(array $categories, $parentId = null) {
+        $branch = [];
+
+        foreach ($categories as $category) {
+            if ($category['parent_id'] === $parentId) {
+                $children = $this->buildTree($categories, $category['id']);
+                if ($children) {
+                    $category['children'] = $children;
+                }
+                $branch[] = $category;
             }
-            return null;
-        } catch (Exception $e) {
-            error_log("Get Parent Error: " . $e->getMessage());
-            throw new Exception("Failed to get parent category");
         }
+
+        return $branch;
     }
 
     /**
      * Get category path (breadcrumb)
      */
-    public function getPath($categoryId) {
-        try {
-            $path = [];
-            $current = $this->find($categoryId);
-            
-            while ($current) {
-                array_unshift($path, $current);
-                $current = $current['parent_id'] ? $this->find($current['parent_id']) : null;
-            }
-            
-            return $path;
-        } catch (Exception $e) {
-            error_log("Get Path Error: " . $e->getMessage());
-            throw new Exception("Failed to get category path");
+    public function getPath($id) {
+        $path = [];
+        $category = $this->find($id);
+
+        while ($category) {
+            array_unshift($path, $category);
+            $category = $category['parent_id'] ? $this->find($category['parent_id']) : null;
         }
+
+        return $path;
     }
 
     /**
-     * Create a new category
+     * Get category statistics
      */
-    public function createCategory($data) {
-        try {
-            if (empty($data['slug'])) {
-                $data['slug'] = Utility::generateSlug($data['name']);
-            }
+    public function getStatistics() {
+        $stats = [
+            'total' => 0,
+            'by_module' => [],
+            'most_used' => []
+        ];
 
-            // Verify unique slug
-            if ($this->exists(['slug' => $data['slug']])) {
-                throw new Exception("Category with this slug already exists");
-            }
+        // Get total count
+        $sql = "SELECT COUNT(*) as count FROM {$this->table}";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['total'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
-            return $this->create($data);
-        } catch (Exception $e) {
-            error_log("Create Category Error: " . $e->getMessage());
-            throw new Exception($e->getMessage());
-        }
+        // Get counts by module
+        $sql = "SELECT module, COUNT(*) as count FROM {$this->table} GROUP BY module";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['by_module'] = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+
+        // Get most used categories (based on posts)
+        $sql = "SELECT c.name, COUNT(p.id) as count 
+                FROM {$this->table} c 
+                LEFT JOIN posts p ON p.category_id = c.id 
+                GROUP BY c.id 
+                ORDER BY count DESC 
+                LIMIT 5";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['most_used'] = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+
+        return $stats;
     }
 
     /**
-     * Update a category
+     * Check if category has children
      */
-    public function updateCategory($id, $data) {
-        try {
-            if (!empty($data['name'])) {
-                $data['slug'] = Utility::generateSlug($data['name']);
-            }
-
-            // Verify unique slug
-            $existing = $this->findOneBy('slug', $data['slug']);
-            if ($existing && $existing['id'] != $id) {
-                throw new Exception("Category with this slug already exists");
-            }
-
-            // Prevent category from becoming its own parent
-            if (!empty($data['parent_id']) && $data['parent_id'] == $id) {
-                throw new Exception("Category cannot be its own parent");
-            }
-
-            return $this->update($id, $data);
-        } catch (Exception $e) {
-            error_log("Update Category Error: " . $e->getMessage());
-            throw new Exception($e->getMessage());
-        }
+    public function hasChildren($id) {
+        $sql = "SELECT COUNT(*) as count FROM {$this->table} WHERE parent_id = ?";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$id]);
+        return $stmt->fetch(PDO::FETCH_ASSOC)['count'] > 0;
     }
 
     /**
-     * Delete a category and handle its children
+     * Check if category is in use
      */
-    public function deleteCategory($id, $moveChildrenTo = null) {
+    public function isInUse($id) {
+        $tables = ['posts', 'events', 'projects', 'programs'];
+        
+        foreach ($tables as $table) {
+            $sql = "SELECT COUNT(*) as count FROM $table WHERE category_id = ?";
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([$id]);
+            if ($stmt->fetch(PDO::FETCH_ASSOC)['count'] > 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Delete category and optionally move content to another category
+     */
+    public function deleteAndMove($id, $moveToId = null) {
         try {
             $this->db->beginTransaction();
 
-            // Get children
-            $children = $this->findBy('parent_id', $id);
-
-            // Handle children
-            if (!empty($children)) {
-                if ($moveChildrenTo) {
-                    // Move children to specified category
-                    foreach ($children as $child) {
-                        $this->update($child['id'], ['parent_id' => $moveChildrenTo]);
-                    }
-                } else {
-                    // Make children top-level categories
-                    foreach ($children as $child) {
-                        $this->update($child['id'], ['parent_id' => null]);
-                    }
+            if ($moveToId) {
+                $tables = ['posts', 'events', 'projects', 'programs'];
+                foreach ($tables as $table) {
+                    $sql = "UPDATE $table SET category_id = ? WHERE category_id = ?";
+                    $stmt = $this->db->prepare($sql);
+                    $stmt->execute([$moveToId, $id]);
                 }
             }
+
+            // Update children categories
+            $sql = "UPDATE {$this->table} SET parent_id = ? WHERE parent_id = ?";
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([$moveToId, $id]);
 
             // Delete the category
             $this->delete($id);
@@ -177,86 +193,27 @@ class Category extends Model {
             return true;
         } catch (Exception $e) {
             $this->db->rollBack();
-            error_log("Delete Category Error: " . $e->getMessage());
-            throw new Exception("Failed to delete category");
+            throw $e;
         }
     }
 
     /**
-     * Get categories by module
+     * Override parent create method to generate slug
      */
-    public function getByModule($module, $parentId = null) {
-        try {
-            $conditions = ['module' => $module];
-            if ($parentId !== null) {
-                $conditions['parent_id'] = $parentId;
-            }
-            
-            $categories = $this->findBy(array_keys($conditions)[0], array_values($conditions)[0]);
-            return $categories;
-        } catch (Exception $e) {
-            error_log("Get Categories By Module Error: " . $e->getMessage());
-            throw new Exception("Failed to get categories by module");
+    public function create(array $data) {
+        if (!isset($data['slug'])) {
+            $data['slug'] = Utility::generateSlug($data['name']);
         }
+        return parent::create($data);
     }
 
     /**
-     * Get category by slug
+     * Override parent update method to generate slug
      */
-    public function getBySlug($slug) {
-        try {
-            return $this->findOneBy('slug', $slug);
-        } catch (Exception $e) {
-            error_log("Get Category By Slug Error: " . $e->getMessage());
-            throw new Exception("Failed to get category by slug");
+    public function update($id, array $data) {
+        if (isset($data['name']) && !isset($data['slug'])) {
+            $data['slug'] = Utility::generateSlug($data['name']);
         }
-    }
-
-    /**
-     * Check if category has children
-     */
-    public function hasChildren($id) {
-        try {
-            return $this->count(['parent_id' => $id]) > 0;
-        } catch (Exception $e) {
-            error_log("Has Children Check Error: " . $e->getMessage());
-            throw new Exception("Failed to check for children");
-        }
-    }
-
-    /**
-     * Get category select options (for forms)
-     */
-    public function getSelectOptions($module = null, $excludeId = null, $parentId = null, $level = 0) {
-        try {
-            $conditions = [];
-            if ($module) {
-                $conditions['module'] = $module;
-            }
-            if ($parentId !== null) {
-                $conditions['parent_id'] = $parentId;
-            }
-
-            $categories = $this->findBy(array_keys($conditions)[0], array_values($conditions)[0]);
-            $options = [];
-
-            foreach ($categories as $category) {
-                if ($excludeId && $category['id'] == $excludeId) {
-                    continue;
-                }
-
-                $prefix = str_repeat('─ ', $level);
-                $options[$category['id']] = $prefix . $category['name'];
-
-                // Get children options
-                $childOptions = $this->getSelectOptions($module, $excludeId, $category['id'], $level + 1);
-                $options = array_merge($options, $childOptions);
-            }
-
-            return $options;
-        } catch (Exception $e) {
-            error_log("Get Select Options Error: " . $e->getMessage());
-            throw new Exception("Failed to get category options");
-        }
+        return parent::update($id, $data);
     }
 }
