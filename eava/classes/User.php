@@ -1,248 +1,257 @@
 <?php
-require_once __DIR__ . '/../config/config.php';
-require_once __DIR__ . '/Database.php';
+class User extends Model {
+    protected $table = 'users';
+    protected $fillable = [
+        'username',
+        'email',
+        'password',
+        'full_name',
+        'role',
+        'status',
+        'remember_token',
+        'last_login'
+    ];
 
-class User {
-    private $db;
-    private $data;
+    protected $hidden = ['password', 'remember_token'];
 
-    public function __construct() {
-        $this->db = Database::getInstance();
-    }
+    /**
+     * Authenticate user
+     */
+    public function authenticate($username, $password) {
+        $sql = "SELECT * FROM {$this->table} WHERE (username = ? OR email = ?) AND status = 'active'";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$username, $username]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    public function login($username, $password) {
-        try {
-            $this->db->query("SELECT * FROM users WHERE (username = ? OR email = ?) AND status = 'active'", 
-                [$username, $username]);
-            $user = $this->db->findOne();
-
-            if ($user && password_verify($password, $user['password'])) {
-                // Update last login
-                $this->db->query("UPDATE users SET last_login = NOW() WHERE id = ?", [$user['id']]);
-                
-                // Set session
-                $_SESSION['user_id'] = $user['id'];
-                $_SESSION['username'] = $user['username'];
-                $_SESSION['role'] = $user['role'];
-                $_SESSION['full_name'] = $user['full_name'];
-                
-                // Set CSRF token
-                $_SESSION[CSRF_TOKEN_NAME] = bin2hex(random_bytes(32));
-                
-                return true;
-            }
-            return false;
-        } catch (Exception $e) {
-            error_log("Login Error: " . $e->getMessage());
-            return false;
-        }
-    }
-
-    public function logout() {
-        session_unset();
-        session_destroy();
-        return true;
-    }
-
-    public function isLoggedIn() {
-        return isset($_SESSION['user_id']);
-    }
-
-    public function isAdmin() {
-        return isset($_SESSION['role']) && $_SESSION['role'] === 'admin';
-    }
-
-    public function isEditor() {
-        return isset($_SESSION['role']) && ($_SESSION['role'] === 'editor' || $_SESSION['role'] === 'admin');
-    }
-
-    public function getCurrentUser() {
-        if (!$this->isLoggedIn()) {
-            return null;
-        }
-
-        if (!$this->data) {
-            $this->db->query("SELECT * FROM users WHERE id = ?", [$_SESSION['user_id']]);
-            $this->data = $this->db->findOne();
-        }
-
-        return $this->data;
-    }
-
-    public function create($userData) {
-        try {
-            // Validate required fields
-            $requiredFields = ['username', 'password', 'email', 'full_name'];
-            foreach ($requiredFields as $field) {
-                if (empty($userData[$field])) {
-                    throw new Exception("$field is required");
-                }
-            }
-
-            // Check if username or email already exists
-            $this->db->query("SELECT id FROM users WHERE username = ? OR email = ?", 
-                [$userData['username'], $userData['email']]);
-            if ($this->db->count() > 0) {
-                throw new Exception("Username or email already exists");
-            }
-
-            // Hash password
-            $userData['password'] = password_hash($userData['password'], PASSWORD_DEFAULT);
-            
-            $sql = "INSERT INTO users (username, password, email, full_name, role, status) 
-                    VALUES (?, ?, ?, ?, ?, ?)";
-            
-            $this->db->query($sql, [
-                $userData['username'],
-                $userData['password'],
-                $userData['email'],
-                $userData['full_name'],
-                $userData['role'] ?? 'user',
-                $userData['status'] ?? 'active'
+        if ($user && password_verify($password, $user['password'])) {
+            // Update last login
+            $this->update($user['id'], [
+                'last_login' => date('Y-m-d H:i:s')
             ]);
 
-            return $this->db->lastInsertId();
-        } catch (Exception $e) {
-            error_log("User Creation Error: " . $e->getMessage());
-            throw new Exception($e->getMessage());
+            return $this->hideFields($user);
         }
+
+        return false;
     }
 
-    public function update($userId, $userData) {
-        try {
-            $updates = [];
-            $params = [];
-
-            // Build update query dynamically
-            foreach ($userData as $key => $value) {
-                if ($key === 'password' && !empty($value)) {
-                    $value = password_hash($value, PASSWORD_DEFAULT);
-                }
-                if ($value !== null) {
-                    $updates[] = "$key = ?";
-                    $params[] = $value;
-                }
-            }
-
-            if (empty($updates)) {
-                return true; // Nothing to update
-            }
-
-            $params[] = $userId;
-            $sql = "UPDATE users SET " . implode(', ', $updates) . " WHERE id = ?";
-            
-            $this->db->query($sql, $params);
-            return true;
-        } catch (Exception $e) {
-            error_log("User Update Error: " . $e->getMessage());
-            throw new Exception("Failed to update user");
+    /**
+     * Create new user
+     */
+    public function create(array $data) {
+        if (isset($data['password'])) {
+            $data['password'] = password_hash($data['password'], PASSWORD_DEFAULT);
         }
+        return parent::create($data);
     }
 
-    public function delete($userId) {
-        try {
-            // Check if user exists
-            $this->db->query("SELECT role FROM users WHERE id = ?", [$userId]);
-            $user = $this->db->findOne();
-            
-            if (!$user) {
-                throw new Exception("User not found");
-            }
-
-            // Prevent deletion of last admin
-            if ($user['role'] === 'admin') {
-                $this->db->query("SELECT COUNT(*) as count FROM users WHERE role = 'admin'");
-                $adminCount = $this->db->findOne()['count'];
-                if ($adminCount <= 1) {
-                    throw new Exception("Cannot delete the last admin user");
-                }
-            }
-
-            $this->db->query("DELETE FROM users WHERE id = ?", [$userId]);
-            return true;
-        } catch (Exception $e) {
-            error_log("User Deletion Error: " . $e->getMessage());
-            throw new Exception($e->getMessage());
+    /**
+     * Update user
+     */
+    public function update($id, array $data) {
+        if (isset($data['password'])) {
+            $data['password'] = password_hash($data['password'], PASSWORD_DEFAULT);
         }
+        return parent::update($id, $data);
     }
 
-    public function getById($userId) {
-        $this->db->query("SELECT id, username, email, full_name, role, status, last_login, created_at 
-            FROM users WHERE id = ?", [$userId]);
-        return $this->db->findOne();
+    /**
+     * Set remember token
+     */
+    public function setRememberToken($userId, $token) {
+        return $this->update($userId, [
+            'remember_token' => $token
+        ]);
     }
 
-    public function getAll($params = []) {
-        $conditions = [];
-        $queryParams = [];
-        $limit = $params['limit'] ?? 10;
-        $offset = $params['offset'] ?? 0;
-
-        if (!empty($params['search'])) {
-            $conditions[] = "(username LIKE ? OR email LIKE ? OR full_name LIKE ?)";
-            $search = "%{$params['search']}%";
-            array_push($queryParams, $search, $search, $search);
-        }
-
-        if (!empty($params['role'])) {
-            $conditions[] = "role = ?";
-            $queryParams[] = $params['role'];
-        }
-
-        if (!empty($params['status'])) {
-            $conditions[] = "status = ?";
-            $queryParams[] = $params['status'];
-        }
-
-        $whereClause = !empty($conditions) ? "WHERE " . implode(" AND ", $conditions) : "";
-
-        $sql = "SELECT id, username, email, full_name, role, status, last_login, created_at 
-                FROM users 
-                $whereClause 
-                ORDER BY created_at DESC 
-                LIMIT ? OFFSET ?";
-
-        array_push($queryParams, $limit, $offset);
-
-        $this->db->query($sql, $queryParams);
-        return $this->db->findAll();
+    /**
+     * Clear remember token
+     */
+    public function clearRememberToken($userId) {
+        return $this->update($userId, [
+            'remember_token' => null
+        ]);
     }
 
-    public function count($params = []) {
-        $conditions = [];
-        $queryParams = [];
+    /**
+     * Get user by remember token
+     */
+    public function getUserByRememberToken($userId, $token) {
+        $sql = "SELECT * FROM {$this->table} WHERE id = ? AND remember_token = ? AND status = 'active'";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$userId, $token]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
-        if (!empty($params['search'])) {
-            $conditions[] = "(username LIKE ? OR email LIKE ? OR full_name LIKE ?)";
-            $search = "%{$params['search']}%";
-            array_push($queryParams, $search, $search, $search);
-        }
-
-        if (!empty($params['role'])) {
-            $conditions[] = "role = ?";
-            $queryParams[] = $params['role'];
-        }
-
-        if (!empty($params['status'])) {
-            $conditions[] = "status = ?";
-            $queryParams[] = $params['status'];
-        }
-
-        $whereClause = !empty($conditions) ? "WHERE " . implode(" AND ", $conditions) : "";
-
-        $sql = "SELECT COUNT(*) as total FROM users $whereClause";
-        $this->db->query($sql, $queryParams);
-        return $this->db->findOne()['total'];
+        return $user ? $this->hideFields($user) : false;
     }
 
-    public function validateCSRFToken($token) {
-        return isset($_SESSION[CSRF_TOKEN_NAME]) && hash_equals($_SESSION[CSRF_TOKEN_NAME], $token);
+    /**
+     * Get user by email
+     */
+    public function getByEmail($email) {
+        $sql = "SELECT * FROM {$this->table} WHERE email = ?";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$email]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return $user ? $this->hideFields($user) : false;
     }
 
-    public function generateCSRFToken() {
-        if (!isset($_SESSION[CSRF_TOKEN_NAME])) {
-            $_SESSION[CSRF_TOKEN_NAME] = bin2hex(random_bytes(32));
+    /**
+     * Get user by username
+     */
+    public function getByUsername($username) {
+        $sql = "SELECT * FROM {$this->table} WHERE username = ?";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$username]);
+        $user = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return $user ? $this->hideFields($user) : false;
+    }
+
+    /**
+     * Check if email exists
+     */
+    public function emailExists($email, $excludeId = null) {
+        $sql = "SELECT COUNT(*) as count FROM {$this->table} WHERE email = ?";
+        $params = [$email];
+
+        if ($excludeId) {
+            $sql .= " AND id != ?";
+            $params[] = $excludeId;
         }
-        return $_SESSION[CSRF_TOKEN_NAME];
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return $result['count'] > 0;
+    }
+
+    /**
+     * Check if username exists
+     */
+    public function usernameExists($username, $excludeId = null) {
+        $sql = "SELECT COUNT(*) as count FROM {$this->table} WHERE username = ?";
+        $params = [$username];
+
+        if ($excludeId) {
+            $sql .= " AND id != ?";
+            $params[] = $excludeId;
+        }
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return $result['count'] > 0;
+    }
+
+    /**
+     * Get user statistics
+     */
+    public function getStatistics() {
+        $stats = [
+            'total' => 0,
+            'active' => 0,
+            'inactive' => 0,
+            'banned' => 0,
+            'by_role' => [],
+            'recent_logins' => []
+        ];
+
+        // Get counts by status
+        $sql = "SELECT status, COUNT(*) as count FROM {$this->table} GROUP BY status";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        foreach ($results as $result) {
+            $stats[$result['status']] = $result['count'];
+            $stats['total'] += $result['count'];
+        }
+
+        // Get counts by role
+        $sql = "SELECT role, COUNT(*) as count FROM {$this->table} GROUP BY role";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['by_role'] = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+
+        // Get recent logins
+        $sql = "SELECT id, username, full_name, last_login 
+                FROM {$this->table} 
+                WHERE last_login IS NOT NULL 
+                ORDER BY last_login DESC 
+                LIMIT 5";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['recent_logins'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        return $stats;
+    }
+
+    /**
+     * Get users by role
+     */
+    public function getByRole($role) {
+        $sql = "SELECT * FROM {$this->table} WHERE role = ? ORDER BY created_at DESC";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$role]);
+        $users = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        return array_map([$this, 'hideFields'], $users);
+    }
+
+    /**
+     * Ban user
+     */
+    public function ban($userId) {
+        return $this->update($userId, [
+            'status' => 'banned'
+        ]);
+    }
+
+    /**
+     * Activate user
+     */
+    public function activate($userId) {
+        return $this->update($userId, [
+            'status' => 'active'
+        ]);
+    }
+
+    /**
+     * Deactivate user
+     */
+    public function deactivate($userId) {
+        return $this->update($userId, [
+            'status' => 'inactive'
+        ]);
+    }
+
+    /**
+     * Change password
+     */
+    public function changePassword($userId, $newPassword) {
+        return $this->update($userId, [
+            'password' => $newPassword
+        ]);
+    }
+
+    /**
+     * Get user's activity
+     */
+    public function getActivity($userId, $limit = 10) {
+        $sql = "SELECT 'post' as type, title, created_at FROM posts WHERE author_id = ?
+                UNION ALL
+                SELECT 'event' as type, title, created_at FROM events WHERE organizer_id = ?
+                UNION ALL
+                SELECT 'donation' as type, amount as title, created_at FROM donations WHERE user_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?";
+
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$userId, $userId, $userId, $limit]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 }
