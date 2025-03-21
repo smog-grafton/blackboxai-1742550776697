@@ -1,301 +1,290 @@
 <?php
-require_once __DIR__ . '/Model.php';
-
 class Project extends Model {
     protected $table = 'projects';
     protected $fillable = [
         'title',
         'slug',
         'description',
-        'featured_image',
-        'status',
+        'goal_amount',
+        'current_amount',
         'start_date',
         'end_date',
-        'category_id'
+        'featured_image',
+        'status',
+        'category_id',
+        'manager_id'
     ];
 
     /**
      * Get active projects
      */
     public function getActive($page = 1, $perPage = 10) {
-        try {
-            return $this->paginate($page, $perPage, [
-                'status' => 'active'
-            ], 'start_date', 'DESC');
-        } catch (Exception $e) {
-            error_log("Get Active Projects Error: " . $e->getMessage());
-            throw new Exception("Failed to get active projects");
-        }
-    }
+        $offset = ($page - 1) * $perPage;
+        
+        $sql = "SELECT p.*, c.name as category_name, u.full_name as manager_name 
+                FROM {$this->table} p 
+                LEFT JOIN categories c ON p.category_id = c.id 
+                LEFT JOIN users u ON p.manager_id = u.id 
+                WHERE p.status = 'active' 
+                ORDER BY p.start_date ASC 
+                LIMIT ? OFFSET ?";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$perPage, $offset]);
+        $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    /**
-     * Get completed projects
-     */
-    public function getCompleted($page = 1, $perPage = 10) {
-        try {
-            return $this->paginate($page, $perPage, [
-                'status' => 'completed'
-            ], 'end_date', 'DESC');
-        } catch (Exception $e) {
-            error_log("Get Completed Projects Error: " . $e->getMessage());
-            throw new Exception("Failed to get completed projects");
-        }
-    }
+        // Get total count for pagination
+        $countSql = "SELECT COUNT(*) as count FROM {$this->table} WHERE status = 'active'";
+        $stmt = $this->db->prepare($countSql);
+        $stmt->execute();
+        $total = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
-    /**
-     * Get upcoming projects
-     */
-    public function getUpcoming($page = 1, $perPage = 10) {
-        try {
-            return $this->paginate($page, $perPage, [
-                'status' => 'upcoming'
-            ], 'start_date', 'ASC');
-        } catch (Exception $e) {
-            error_log("Get Upcoming Projects Error: " . $e->getMessage());
-            throw new Exception("Failed to get upcoming projects");
-        }
-    }
-
-    /**
-     * Create a new project
-     */
-    public function createProject($data) {
-        try {
-            if (empty($data['slug'])) {
-                $data['slug'] = Utility::generateSlug($data['title']);
-            }
-
-            // Validate dates if provided
-            if (!empty($data['start_date']) && !empty($data['end_date'])) {
-                if (strtotime($data['end_date']) < strtotime($data['start_date'])) {
-                    throw new Exception("End date cannot be before start date");
-                }
-            }
-
-            // Set initial status if not provided
-            if (empty($data['status'])) {
-                $now = time();
-                $startTime = !empty($data['start_date']) ? strtotime($data['start_date']) : $now;
-                
-                if ($now < $startTime) {
-                    $data['status'] = 'upcoming';
-                } else {
-                    $data['status'] = 'active';
-                }
-            }
-
-            return $this->create($data);
-        } catch (Exception $e) {
-            error_log("Create Project Error: " . $e->getMessage());
-            throw new Exception($e->getMessage());
-        }
-    }
-
-    /**
-     * Update a project
-     */
-    public function updateProject($id, $data) {
-        try {
-            if (!empty($data['title'])) {
-                $data['slug'] = Utility::generateSlug($data['title']);
-            }
-
-            // Validate dates if both are provided
-            if (!empty($data['start_date']) && !empty($data['end_date'])) {
-                if (strtotime($data['end_date']) < strtotime($data['start_date'])) {
-                    throw new Exception("End date cannot be before start date");
-                }
-            }
-
-            // Update status based on dates if not explicitly set
-            if (empty($data['status']) && (!empty($data['start_date']) || !empty($data['end_date']))) {
-                $project = $this->find($id);
-                $startDate = !empty($data['start_date']) ? $data['start_date'] : $project['start_date'];
-                $endDate = !empty($data['end_date']) ? $data['end_date'] : $project['end_date'];
-                
-                $now = time();
-                $startTime = strtotime($startDate);
-                $endTime = $endDate ? strtotime($endDate) : null;
-
-                if ($now < $startTime) {
-                    $data['status'] = 'upcoming';
-                } elseif (!$endTime || $now <= $endTime) {
-                    $data['status'] = 'active';
-                } else {
-                    $data['status'] = 'completed';
-                }
-            }
-
-            return $this->update($id, $data);
-        } catch (Exception $e) {
-            error_log("Update Project Error: " . $e->getMessage());
-            throw new Exception($e->getMessage());
-        }
-    }
-
-    /**
-     * Get project with full details
-     */
-    public function getProjectWithDetails($id) {
-        try {
-            $sql = "SELECT p.*, 
-                           c.name as category_name,
-                           c.slug as category_slug
-                    FROM {$this->table} p
-                    LEFT JOIN categories c ON p.category_id = c.id
-                    WHERE p.id = ?";
-            
-            $this->db->query($sql, [$id]);
-            return $this->db->findOne();
-        } catch (Exception $e) {
-            error_log("Get Project Details Error: " . $e->getMessage());
-            throw new Exception("Failed to get project details");
-        }
-    }
-
-    /**
-     * Get projects by category
-     */
-    public function getByCategory($categoryId, $page = 1, $perPage = 10) {
-        try {
-            return $this->paginate($page, $perPage, [
-                'category_id' => $categoryId
-            ], 'start_date', 'DESC');
-        } catch (Exception $e) {
-            error_log("Get Projects By Category Error: " . $e->getMessage());
-            throw new Exception("Failed to get projects by category");
-        }
+        return [
+            'data' => $data,
+            'total' => $total,
+            'per_page' => $perPage,
+            'current_page' => $page,
+            'last_page' => ceil($total / $perPage)
+        ];
     }
 
     /**
      * Get project by slug
      */
     public function getBySlug($slug) {
+        $sql = "SELECT p.*, c.name as category_name, u.full_name as manager_name 
+                FROM {$this->table} p 
+                LEFT JOIN categories c ON p.category_id = c.id 
+                LEFT JOIN users u ON p.manager_id = u.id 
+                WHERE p.slug = ?";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$slug]);
+        return $stmt->fetch(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Get project team members
+     */
+    public function getTeamMembers($projectId) {
+        $sql = "SELECT u.*, pt.role 
+                FROM project_team pt 
+                JOIN users u ON pt.user_id = u.id 
+                WHERE pt.project_id = ? 
+                ORDER BY pt.created_at ASC";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$projectId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Add team member
+     */
+    public function addTeamMember($projectId, $userId, $role) {
         try {
-            $sql = "SELECT p.*, 
-                           c.name as category_name,
-                           c.slug as category_slug
-                    FROM {$this->table} p
-                    LEFT JOIN categories c ON p.category_id = c.id
-                    WHERE p.slug = ?";
-            
-            $this->db->query($sql, [$slug]);
-            return $this->db->findOne();
+            $sql = "INSERT INTO project_team (project_id, user_id, role) VALUES (?, ?, ?)";
+            $stmt = $this->db->prepare($sql);
+            return $stmt->execute([$projectId, $userId, $role]);
         } catch (Exception $e) {
-            error_log("Get Project By Slug Error: " . $e->getMessage());
-            throw new Exception("Failed to get project by slug");
+            if ($e->getCode() == 23000) {
+                throw new Exception('User is already a team member');
+            }
+            throw $e;
         }
     }
 
     /**
-     * Get related projects
+     * Remove team member
      */
-    public function getRelated($projectId, $categoryId, $limit = 3) {
-        try {
-            $sql = "SELECT p.*, c.name as category_name 
-                    FROM {$this->table} p
-                    LEFT JOIN categories c ON p.category_id = c.id
-                    WHERE p.id != ? 
-                    AND p.category_id = ?
-                    AND p.status != 'completed'
-                    ORDER BY p.start_date DESC
-                    LIMIT ?";
-            
-            $this->db->query($sql, [$projectId, $categoryId, $limit]);
-            return $this->db->findAll();
-        } catch (Exception $e) {
-            error_log("Get Related Projects Error: " . $e->getMessage());
-            throw new Exception("Failed to get related projects");
-        }
+    public function removeTeamMember($projectId, $userId) {
+        $sql = "DELETE FROM project_team WHERE project_id = ? AND user_id = ?";
+        $stmt = $this->db->prepare($sql);
+        return $stmt->execute([$projectId, $userId]);
     }
 
     /**
-     * Search projects
+     * Update project progress
      */
-    public function searchProjects($searchTerm, $page = 1, $perPage = 10) {
-        try {
-            return $this->search(['title', 'description'], $searchTerm, $page, $perPage);
-        } catch (Exception $e) {
-            error_log("Search Projects Error: " . $e->getMessage());
-            throw new Exception("Failed to search projects");
-        }
+    public function updateProgress($projectId, $amount) {
+        $sql = "UPDATE {$this->table} 
+                SET current_amount = current_amount + ? 
+                WHERE id = ?";
+        
+        $stmt = $this->db->prepare($sql);
+        return $stmt->execute([$amount, $projectId]);
+    }
+
+    /**
+     * Get project milestones
+     */
+    public function getMilestones($projectId) {
+        $sql = "SELECT * FROM project_milestones 
+                WHERE project_id = ? 
+                ORDER BY due_date ASC";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$projectId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Add milestone
+     */
+    public function addMilestone($projectId, $data) {
+        $sql = "INSERT INTO project_milestones 
+                (project_id, title, description, due_date, status) 
+                VALUES (?, ?, ?, ?, ?)";
+        
+        $stmt = $this->db->prepare($sql);
+        return $stmt->execute([
+            $projectId,
+            $data['title'],
+            $data['description'],
+            $data['due_date'],
+            $data['status'] ?? 'pending'
+        ]);
+    }
+
+    /**
+     * Update milestone status
+     */
+    public function updateMilestoneStatus($milestoneId, $status) {
+        $sql = "UPDATE project_milestones SET status = ? WHERE id = ?";
+        $stmt = $this->db->prepare($sql);
+        return $stmt->execute([$status, $milestoneId]);
     }
 
     /**
      * Get project statistics
      */
     public function getStatistics() {
-        try {
-            $stats = [
-                'total' => $this->count(),
-                'active' => $this->count(['status' => 'active']),
-                'completed' => $this->count(['status' => 'completed']),
-                'upcoming' => $this->count(['status' => 'upcoming'])
-            ];
+        $stats = [
+            'total_projects' => 0,
+            'active_projects' => 0,
+            'completed_projects' => 0,
+            'total_funding' => 0,
+            'by_category' => [],
+            'by_status' => [],
+            'recent_milestones' => []
+        ];
 
-            // Get projects by category
-            $sql = "SELECT c.name, COUNT(*) as count 
-                    FROM {$this->table} p
-                    LEFT JOIN categories c ON p.category_id = c.id
-                    GROUP BY p.category_id";
-            
-            $this->db->query($sql);
-            $stats['by_category'] = $this->db->findAll();
+        // Get basic counts
+        $sql = "SELECT 
+                COUNT(*) as total_projects,
+                SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active_projects,
+                SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_projects,
+                SUM(current_amount) as total_funding
+                FROM {$this->table}";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $basic = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        $stats['total_projects'] = $basic['total_projects'];
+        $stats['active_projects'] = $basic['active_projects'];
+        $stats['completed_projects'] = $basic['completed_projects'];
+        $stats['total_funding'] = $basic['total_funding'];
 
-            return $stats;
-        } catch (Exception $e) {
-            error_log("Get Project Statistics Error: " . $e->getMessage());
-            throw new Exception("Failed to get project statistics");
-        }
+        // Get counts by category
+        $sql = "SELECT c.name, COUNT(*) as count 
+                FROM {$this->table} p 
+                LEFT JOIN categories c ON p.category_id = c.id 
+                GROUP BY c.name";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['by_category'] = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+
+        // Get counts by status
+        $sql = "SELECT status, COUNT(*) as count FROM {$this->table} GROUP BY status";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['by_status'] = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+
+        // Get recent milestones
+        $sql = "SELECT pm.*, p.title as project_title 
+                FROM project_milestones pm 
+                JOIN {$this->table} p ON pm.project_id = p.id 
+                WHERE pm.due_date >= CURRENT_DATE 
+                ORDER BY pm.due_date ASC 
+                LIMIT 5";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['recent_milestones'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        return $stats;
     }
 
     /**
-     * Update project statuses based on dates
+     * Get user projects
      */
-    public function updateProjectStatuses() {
-        try {
-            $now = date('Y-m-d');
-            
-            // Update to active
-            $sql = "UPDATE {$this->table} 
-                    SET status = 'active' 
-                    WHERE start_date <= ? 
-                    AND (end_date IS NULL OR end_date >= ?) 
-                    AND status = 'upcoming'";
-            $this->db->query($sql, [$now, $now]);
-            
-            // Update to completed
-            $sql = "UPDATE {$this->table} 
-                    SET status = 'completed' 
-                    WHERE end_date < ? 
-                    AND status != 'completed'";
-            $this->db->query($sql, [$now]);
-            
-            return true;
-        } catch (Exception $e) {
-            error_log("Update Project Statuses Error: " . $e->getMessage());
-            throw new Exception("Failed to update project statuses");
-        }
+    public function getUserProjects($userId) {
+        $sql = "SELECT p.*, c.name as category_name 
+                FROM {$this->table} p 
+                LEFT JOIN categories c ON p.category_id = c.id 
+                WHERE p.manager_id = ? OR EXISTS (
+                    SELECT 1 FROM project_team pt WHERE pt.project_id = p.id AND pt.user_id = ?
+                ) 
+                ORDER BY p.created_at DESC";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$userId, $userId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     /**
-     * Get featured projects
+     * Get similar projects
      */
-    public function getFeatured($limit = 3) {
-        try {
-            $sql = "SELECT p.*, c.name as category_name 
-                    FROM {$this->table} p
-                    LEFT JOIN categories c ON p.category_id = c.id
-                    WHERE p.status = 'active'
-                    AND p.featured_image IS NOT NULL
-                    ORDER BY p.start_date DESC
-                    LIMIT ?";
-            
-            $this->db->query($sql, [$limit]);
-            return $this->db->findAll();
-        } catch (Exception $e) {
-            error_log("Get Featured Projects Error: " . $e->getMessage());
-            throw new Exception("Failed to get featured projects");
+    public function getSimilar($projectId, $limit = 3) {
+        $project = $this->find($projectId);
+        if (!$project) {
+            return [];
         }
+
+        $sql = "SELECT p.*, c.name as category_name 
+                FROM {$this->table} p 
+                LEFT JOIN categories c ON p.category_id = c.id 
+                WHERE p.id != ? 
+                AND p.category_id = ? 
+                AND p.status = 'active' 
+                ORDER BY p.start_date ASC 
+                LIMIT ?";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$projectId, $project['category_id'], $limit]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Get project progress
+     */
+    public function getProgress($projectId) {
+        $project = $this->find($projectId);
+        if (!$project) {
+            return 0;
+        }
+
+        return [
+            'current' => $project['current_amount'],
+            'goal' => $project['goal_amount'],
+            'percentage' => ($project['current_amount'] / $project['goal_amount']) * 100,
+            'remaining' => $project['goal_amount'] - $project['current_amount'],
+            'days_left' => max(0, ceil((strtotime($project['end_date']) - time()) / 86400))
+        ];
+    }
+
+    /**
+     * Check if user is team member
+     */
+    public function isTeamMember($projectId, $userId) {
+        $sql = "SELECT COUNT(*) as count 
+                FROM project_team 
+                WHERE project_id = ? AND user_id = ?";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$projectId, $userId]);
+        return $stmt->fetch(PDO::FETCH_ASSOC)['count'] > 0;
     }
 }
