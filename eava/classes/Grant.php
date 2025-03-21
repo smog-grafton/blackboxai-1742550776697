@@ -1,6 +1,4 @@
 <?php
-require_once __DIR__ . '/Model.php';
-
 class Grant extends Model {
     protected $table = 'grants';
     protected $fillable = [
@@ -9,261 +7,257 @@ class Grant extends Model {
         'description',
         'amount',
         'deadline',
-        'status'
+        'status',
+        'category_id',
+        'created_by'
     ];
 
     /**
      * Get open grants
      */
     public function getOpen($page = 1, $perPage = 10) {
-        try {
-            return $this->paginate($page, $perPage, [
-                'status' => 'open',
-                'deadline >= ?' => date('Y-m-d')
-            ], 'deadline', 'ASC');
-        } catch (Exception $e) {
-            error_log("Get Open Grants Error: " . $e->getMessage());
-            throw new Exception("Failed to get open grants");
-        }
-    }
+        $offset = ($page - 1) * $perPage;
+        
+        $sql = "SELECT g.*, c.name as category_name, u.full_name as creator_name 
+                FROM {$this->table} g 
+                LEFT JOIN categories c ON g.category_id = c.id 
+                LEFT JOIN users u ON g.created_by = u.id 
+                WHERE g.status = 'open' 
+                AND g.deadline >= CURRENT_DATE 
+                ORDER BY g.deadline ASC 
+                LIMIT ? OFFSET ?";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$perPage, $offset]);
+        $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    /**
-     * Create a new grant
-     */
-    public function createGrant($data) {
-        try {
-            if (empty($data['slug'])) {
-                $data['slug'] = Utility::generateSlug($data['title']);
-            }
+        // Get total count for pagination
+        $countSql = "SELECT COUNT(*) as count 
+                     FROM {$this->table} 
+                     WHERE status = 'open' 
+                     AND deadline >= CURRENT_DATE";
+        $stmt = $this->db->prepare($countSql);
+        $stmt->execute();
+        $total = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
-            // Validate amount
-            if (!is_numeric($data['amount']) || $data['amount'] <= 0) {
-                throw new Exception("Invalid grant amount");
-            }
-
-            // Validate deadline
-            if (strtotime($data['deadline']) < strtotime(date('Y-m-d'))) {
-                throw new Exception("Deadline cannot be in the past");
-            }
-
-            // Set default status if not provided
-            if (empty($data['status'])) {
-                $data['status'] = 'open';
-            }
-
-            return $this->create($data);
-        } catch (Exception $e) {
-            error_log("Create Grant Error: " . $e->getMessage());
-            throw new Exception($e->getMessage());
-        }
-    }
-
-    /**
-     * Update a grant
-     */
-    public function updateGrant($id, $data) {
-        try {
-            if (!empty($data['title'])) {
-                $data['slug'] = Utility::generateSlug($data['title']);
-            }
-
-            // Validate amount if provided
-            if (isset($data['amount']) && (!is_numeric($data['amount']) || $data['amount'] <= 0)) {
-                throw new Exception("Invalid grant amount");
-            }
-
-            // Validate deadline if provided
-            if (!empty($data['deadline'])) {
-                $grant = $this->find($id);
-                if ($grant['status'] === 'open' && strtotime($data['deadline']) < strtotime(date('Y-m-d'))) {
-                    throw new Exception("Deadline cannot be in the past for open grants");
-                }
-            }
-
-            return $this->update($id, $data);
-        } catch (Exception $e) {
-            error_log("Update Grant Error: " . $e->getMessage());
-            throw new Exception($e->getMessage());
-        }
-    }
-
-    /**
-     * Get grant with full details
-     */
-    public function getGrantWithDetails($id) {
-        try {
-            $sql = "SELECT g.*, 
-                           COUNT(DISTINCT ga.id) as application_count,
-                           COUNT(DISTINCT CASE WHEN ga.status = 'pending' THEN ga.id END) as pending_applications
-                    FROM {$this->table} g
-                    LEFT JOIN grant_applications ga ON g.id = ga.grant_id
-                    WHERE g.id = ?
-                    GROUP BY g.id";
-            
-            $this->db->query($sql, [$id]);
-            return $this->db->findOne();
-        } catch (Exception $e) {
-            error_log("Get Grant Details Error: " . $e->getMessage());
-            throw new Exception("Failed to get grant details");
-        }
+        return [
+            'data' => $data,
+            'total' => $total,
+            'per_page' => $perPage,
+            'current_page' => $page,
+            'last_page' => ceil($total / $perPage)
+        ];
     }
 
     /**
      * Get grant by slug
      */
     public function getBySlug($slug) {
-        try {
-            return $this->findOneBy('slug', $slug);
-        } catch (Exception $e) {
-            error_log("Get Grant By Slug Error: " . $e->getMessage());
-            throw new Exception("Failed to get grant by slug");
-        }
+        $sql = "SELECT g.*, c.name as category_name, u.full_name as creator_name 
+                FROM {$this->table} g 
+                LEFT JOIN categories c ON g.category_id = c.id 
+                LEFT JOIN users u ON g.created_by = u.id 
+                WHERE g.slug = ?";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$slug]);
+        return $stmt->fetch(PDO::FETCH_ASSOC);
     }
 
     /**
-     * Close a grant
+     * Submit grant application
      */
-    public function closeGrant($id) {
+    public function submitApplication($grantId, $userId, $data) {
         try {
-            return $this->update($id, ['status' => 'closed']);
-        } catch (Exception $e) {
-            error_log("Close Grant Error: " . $e->getMessage());
-            throw new Exception("Failed to close grant");
-        }
-    }
+            $this->db->beginTransaction();
 
-    /**
-     * Get grants by status
-     */
-    public function getByStatus($status, $page = 1, $perPage = 10) {
-        try {
-            return $this->paginate($page, $perPage, [
-                'status' => $status
-            ], 'created_at', 'DESC');
-        } catch (Exception $e) {
-            error_log("Get Grants By Status Error: " . $e->getMessage());
-            throw new Exception("Failed to get grants by status");
-        }
-    }
+            // Check if grant is still open
+            $grant = $this->find($grantId);
+            if (!$grant || $grant['status'] !== 'open' || strtotime($grant['deadline']) < time()) {
+                throw new Exception('Grant is not available for applications');
+            }
 
-    /**
-     * Get grants statistics
-     */
-    public function getStatistics() {
-        try {
-            $stats = [
-                'total' => $this->count(),
-                'open' => $this->count(['status' => 'open']),
-                'closed' => $this->count(['status' => 'closed']),
-                'under_review' => $this->count(['status' => 'under_review'])
-            ];
+            // Check if user has already applied
+            $sql = "SELECT COUNT(*) as count FROM grant_applications 
+                    WHERE grant_id = ? AND user_id = ?";
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([$grantId, $userId]);
+            if ($stmt->fetch(PDO::FETCH_ASSOC)['count'] > 0) {
+                throw new Exception('You have already applied for this grant');
+            }
 
-            // Get total grant amount
-            $sql = "SELECT SUM(amount) as total_amount FROM {$this->table}";
-            $this->db->query($sql);
-            $result = $this->db->findOne();
-            $stats['total_amount'] = $result['total_amount'] ?? 0;
+            // Create application
+            $sql = "INSERT INTO grant_applications 
+                    (grant_id, user_id, content, status) 
+                    VALUES (?, ?, ?, 'submitted')";
+            $stmt = $this->db->prepare($sql);
+            $stmt->execute([$grantId, $userId, $data['content']]);
 
-            // Get applications statistics
-            $sql = "SELECT g.status as grant_status, 
-                           COUNT(DISTINCT ga.id) as application_count,
-                           COUNT(DISTINCT CASE WHEN ga.status = 'approved' THEN ga.id END) as approved_count
-                    FROM {$this->table} g
-                    LEFT JOIN grant_applications ga ON g.id = ga.grant_id
-                    GROUP BY g.status";
-            
-            $this->db->query($sql);
-            $stats['applications'] = $this->db->findAll();
-
-            return $stats;
-        } catch (Exception $e) {
-            error_log("Get Grant Statistics Error: " . $e->getMessage());
-            throw new Exception("Failed to get grant statistics");
-        }
-    }
-
-    /**
-     * Search grants
-     */
-    public function searchGrants($searchTerm, $page = 1, $perPage = 10) {
-        try {
-            return $this->search(['title', 'description'], $searchTerm, $page, $perPage);
-        } catch (Exception $e) {
-            error_log("Search Grants Error: " . $e->getMessage());
-            throw new Exception("Failed to search grants");
-        }
-    }
-
-    /**
-     * Get upcoming deadlines
-     */
-    public function getUpcomingDeadlines($limit = 5) {
-        try {
-            $sql = "SELECT * FROM {$this->table}
-                    WHERE status = 'open'
-                    AND deadline >= CURRENT_DATE
-                    ORDER BY deadline ASC
-                    LIMIT ?";
-            
-            $this->db->query($sql, [$limit]);
-            return $this->db->findAll();
-        } catch (Exception $e) {
-            error_log("Get Upcoming Deadlines Error: " . $e->getMessage());
-            throw new Exception("Failed to get upcoming deadlines");
-        }
-    }
-
-    /**
-     * Get grants by amount range
-     */
-    public function getByAmountRange($minAmount, $maxAmount, $page = 1, $perPage = 10) {
-        try {
-            $conditions = [
-                'amount >= ?' => $minAmount,
-                'amount <= ?' => $maxAmount,
-                'status' => 'open'
-            ];
-            
-            return $this->paginate($page, $perPage, $conditions, 'deadline', 'ASC');
-        } catch (Exception $e) {
-            error_log("Get Grants By Amount Range Error: " . $e->getMessage());
-            throw new Exception("Failed to get grants by amount range");
-        }
-    }
-
-    /**
-     * Update grant statuses based on deadline
-     */
-    public function updateGrantStatuses() {
-        try {
-            $sql = "UPDATE {$this->table}
-                    SET status = 'closed'
-                    WHERE status = 'open'
-                    AND deadline < CURRENT_DATE";
-            
-            $this->db->query($sql);
+            $this->db->commit();
             return true;
         } catch (Exception $e) {
-            error_log("Update Grant Statuses Error: " . $e->getMessage());
-            throw new Exception("Failed to update grant statuses");
+            $this->db->rollBack();
+            throw $e;
         }
     }
 
     /**
-     * Get grant application statistics
+     * Get grant applications
      */
-    public function getApplicationStatistics($grantId) {
-        try {
-            $sql = "SELECT status, COUNT(*) as count
-                    FROM grant_applications
-                    WHERE grant_id = ?
-                    GROUP BY status";
-            
-            $this->db->query($sql, [$grantId]);
-            return $this->db->findAll();
-        } catch (Exception $e) {
-            error_log("Get Grant Application Statistics Error: " . $e->getMessage());
-            throw new Exception("Failed to get application statistics");
+    public function getApplications($grantId, $status = null) {
+        $sql = "SELECT a.*, u.full_name, u.email 
+                FROM grant_applications a 
+                LEFT JOIN users u ON a.user_id = u.id 
+                WHERE a.grant_id = ?";
+        
+        $params = [$grantId];
+        if ($status) {
+            $sql .= " AND a.status = ?";
+            $params[] = $status;
         }
+        
+        $sql .= " ORDER BY a.created_at DESC";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Update application status
+     */
+    public function updateApplicationStatus($applicationId, $status, $feedback = null) {
+        $sql = "UPDATE grant_applications 
+                SET status = ?, feedback = ?, updated_at = CURRENT_TIMESTAMP 
+                WHERE id = ?";
+        
+        $stmt = $this->db->prepare($sql);
+        return $stmt->execute([$status, $feedback, $applicationId]);
+    }
+
+    /**
+     * Get grant statistics
+     */
+    public function getStatistics() {
+        $stats = [
+            'total_grants' => 0,
+            'open_grants' => 0,
+            'total_amount' => 0,
+            'total_applications' => 0,
+            'by_category' => [],
+            'by_status' => [],
+            'application_stats' => []
+        ];
+
+        // Get basic counts
+        $sql = "SELECT 
+                COUNT(*) as total_grants,
+                SUM(CASE WHEN status = 'open' AND deadline >= CURRENT_DATE THEN 1 ELSE 0 END) as open_grants,
+                SUM(amount) as total_amount
+                FROM {$this->table}";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $basic = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        $stats['total_grants'] = $basic['total_grants'];
+        $stats['open_grants'] = $basic['open_grants'];
+        $stats['total_amount'] = $basic['total_amount'];
+
+        // Get counts by category
+        $sql = "SELECT c.name, COUNT(*) as count, SUM(g.amount) as amount 
+                FROM {$this->table} g 
+                LEFT JOIN categories c ON g.category_id = c.id 
+                GROUP BY c.name";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['by_category'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        // Get counts by status
+        $sql = "SELECT status, COUNT(*) as count 
+                FROM {$this->table} 
+                GROUP BY status";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['by_status'] = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+
+        // Get application statistics
+        $sql = "SELECT 
+                COUNT(*) as total_applications,
+                SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END) as approved,
+                SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END) as rejected,
+                SUM(CASE WHEN status = 'under_review' THEN 1 ELSE 0 END) as under_review
+                FROM grant_applications";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['application_stats'] = $stmt->fetch(PDO::FETCH_ASSOC);
+        $stats['total_applications'] = $stats['application_stats']['total_applications'];
+
+        return $stats;
+    }
+
+    /**
+     * Get user applications
+     */
+    public function getUserApplications($userId) {
+        $sql = "SELECT a.*, g.title as grant_title, g.amount 
+                FROM grant_applications a 
+                JOIN {$this->table} g ON a.grant_id = g.id 
+                WHERE a.user_id = ? 
+                ORDER BY a.created_at DESC";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$userId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Check if grant is open
+     */
+    public function isOpen($grantId) {
+        $grant = $this->find($grantId);
+        if (!$grant) {
+            return false;
+        }
+
+        return $grant['status'] === 'open' && 
+               strtotime($grant['deadline']) >= time();
+    }
+
+    /**
+     * Get similar grants
+     */
+    public function getSimilar($grantId, $limit = 3) {
+        $grant = $this->find($grantId);
+        if (!$grant) {
+            return [];
+        }
+
+        $sql = "SELECT g.*, c.name as category_name 
+                FROM {$this->table} g 
+                LEFT JOIN categories c ON g.category_id = c.id 
+                WHERE g.id != ? 
+                AND g.category_id = ? 
+                AND g.status = 'open' 
+                AND g.deadline >= CURRENT_DATE 
+                ORDER BY g.deadline ASC 
+                LIMIT ?";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$grantId, $grant['category_id'], $limit]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Get application count
+     */
+    public function getApplicationCount($grantId) {
+        $sql = "SELECT COUNT(*) as count FROM grant_applications WHERE grant_id = ?";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$grantId]);
+        return $stmt->fetch(PDO::FETCH_ASSOC)['count'];
     }
 }
