@@ -1,292 +1,278 @@
 <?php
-require_once __DIR__ . '/Model.php';
-
 class Program extends Model {
     protected $table = 'programs';
     protected $fillable = [
         'title',
         'slug',
         'description',
-        'featured_image',
+        'goal_amount',
         'status',
-        'category_id'
+        'category_id',
+        'coordinator_id'
     ];
 
     /**
      * Get active programs
      */
     public function getActive($page = 1, $perPage = 10) {
-        try {
-            return $this->paginate($page, $perPage, [
-                'status' => 'active'
-            ], 'created_at', 'DESC');
-        } catch (Exception $e) {
-            error_log("Get Active Programs Error: " . $e->getMessage());
-            throw new Exception("Failed to get active programs");
-        }
-    }
+        $offset = ($page - 1) * $perPage;
+        
+        $sql = "SELECT p.*, c.name as category_name, u.full_name as coordinator_name 
+                FROM {$this->table} p 
+                LEFT JOIN categories c ON p.category_id = c.id 
+                LEFT JOIN users u ON p.coordinator_id = u.id 
+                WHERE p.status = 'active' 
+                ORDER BY p.created_at DESC 
+                LIMIT ? OFFSET ?";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$perPage, $offset]);
+        $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    /**
-     * Create a new program
-     */
-    public function createProgram($data) {
-        try {
-            if (empty($data['slug'])) {
-                $data['slug'] = Utility::generateSlug($data['title']);
-            }
+        // Get total count for pagination
+        $countSql = "SELECT COUNT(*) as count FROM {$this->table} WHERE status = 'active'";
+        $stmt = $this->db->prepare($countSql);
+        $stmt->execute();
+        $total = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
 
-            // Verify unique slug
-            if ($this->exists(['slug' => $data['slug']])) {
-                throw new Exception("Program with this slug already exists");
-            }
-
-            // Set default status if not provided
-            if (empty($data['status'])) {
-                $data['status'] = 'active';
-            }
-
-            return $this->create($data);
-        } catch (Exception $e) {
-            error_log("Create Program Error: " . $e->getMessage());
-            throw new Exception($e->getMessage());
-        }
-    }
-
-    /**
-     * Update a program
-     */
-    public function updateProgram($id, $data) {
-        try {
-            if (!empty($data['title'])) {
-                $data['slug'] = Utility::generateSlug($data['title']);
-
-                // Verify unique slug
-                $existing = $this->findOneBy('slug', $data['slug']);
-                if ($existing && $existing['id'] != $id) {
-                    throw new Exception("Program with this slug already exists");
-                }
-            }
-
-            return $this->update($id, $data);
-        } catch (Exception $e) {
-            error_log("Update Program Error: " . $e->getMessage());
-            throw new Exception($e->getMessage());
-        }
-    }
-
-    /**
-     * Get program with full details
-     */
-    public function getProgramWithDetails($id) {
-        try {
-            $sql = "SELECT p.*, 
-                           c.name as category_name,
-                           c.slug as category_slug
-                    FROM {$this->table} p
-                    LEFT JOIN categories c ON p.category_id = c.id
-                    WHERE p.id = ?";
-            
-            $this->db->query($sql, [$id]);
-            return $this->db->findOne();
-        } catch (Exception $e) {
-            error_log("Get Program Details Error: " . $e->getMessage());
-            throw new Exception("Failed to get program details");
-        }
-    }
-
-    /**
-     * Get programs by category
-     */
-    public function getByCategory($categoryId, $page = 1, $perPage = 10) {
-        try {
-            return $this->paginate($page, $perPage, [
-                'category_id' => $categoryId,
-                'status' => 'active'
-            ], 'created_at', 'DESC');
-        } catch (Exception $e) {
-            error_log("Get Programs By Category Error: " . $e->getMessage());
-            throw new Exception("Failed to get programs by category");
-        }
+        return [
+            'data' => $data,
+            'total' => $total,
+            'per_page' => $perPage,
+            'current_page' => $page,
+            'last_page' => ceil($total / $perPage)
+        ];
     }
 
     /**
      * Get program by slug
      */
     public function getBySlug($slug) {
+        $sql = "SELECT p.*, c.name as category_name, u.full_name as coordinator_name 
+                FROM {$this->table} p 
+                LEFT JOIN categories c ON p.category_id = c.id 
+                LEFT JOIN users u ON p.coordinator_id = u.id 
+                WHERE p.slug = ?";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$slug]);
+        return $stmt->fetch(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Get program participants
+     */
+    public function getParticipants($programId) {
+        $sql = "SELECT u.* 
+                FROM program_participants pp 
+                JOIN users u ON pp.user_id = u.id 
+                WHERE pp.program_id = ? 
+                ORDER BY pp.created_at ASC";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$programId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Add participant to program
+     */
+    public function addParticipant($programId, $userId) {
         try {
-            $sql = "SELECT p.*, 
-                           c.name as category_name,
-                           c.slug as category_slug
-                    FROM {$this->table} p
-                    LEFT JOIN categories c ON p.category_id = c.id
-                    WHERE p.slug = ?";
-            
-            $this->db->query($sql, [$slug]);
-            return $this->db->findOne();
+            // Check if program is full
+            if ($this->isFull($programId)) {
+                throw new Exception('Program is at maximum capacity');
+            }
+
+            $sql = "INSERT INTO program_participants (program_id, user_id) VALUES (?, ?)";
+            $stmt = $this->db->prepare($sql);
+            return $stmt->execute([$programId, $userId]);
         } catch (Exception $e) {
-            error_log("Get Program By Slug Error: " . $e->getMessage());
-            throw new Exception("Failed to get program by slug");
+            if ($e->getCode() == 23000) { // Duplicate entry
+                throw new Exception('User is already enrolled in this program');
+            }
+            throw $e;
         }
     }
 
     /**
-     * Get related programs
+     * Remove participant from program
      */
-    public function getRelated($programId, $categoryId, $limit = 3) {
-        try {
-            $sql = "SELECT p.*, c.name as category_name 
-                    FROM {$this->table} p
-                    LEFT JOIN categories c ON p.category_id = c.id
-                    WHERE p.id != ? 
-                    AND p.category_id = ?
-                    AND p.status = 'active'
-                    ORDER BY p.created_at DESC
-                    LIMIT ?";
-            
-            $this->db->query($sql, [$programId, $categoryId, $limit]);
-            return $this->db->findAll();
-        } catch (Exception $e) {
-            error_log("Get Related Programs Error: " . $e->getMessage());
-            throw new Exception("Failed to get related programs");
-        }
+    public function removeParticipant($programId, $userId) {
+        $sql = "DELETE FROM program_participants WHERE program_id = ? AND user_id = ?";
+        $stmt = $this->db->prepare($sql);
+        return $stmt->execute([$programId, $userId]);
     }
 
     /**
-     * Search programs
+     * Check if program is full
      */
-    public function searchPrograms($searchTerm, $page = 1, $perPage = 10) {
-        try {
-            return $this->search(['title', 'description'], $searchTerm, $page, $perPage);
-        } catch (Exception $e) {
-            error_log("Search Programs Error: " . $e->getMessage());
-            throw new Exception("Failed to search programs");
+    public function isFull($programId) {
+        $program = $this->find($programId);
+        if (!$program) {
+            return true;
         }
-    }
 
-    /**
-     * Get featured programs
-     */
-    public function getFeatured($limit = 3) {
-        try {
-            $sql = "SELECT p.*, c.name as category_name 
-                    FROM {$this->table} p
-                    LEFT JOIN categories c ON p.category_id = c.id
-                    WHERE p.status = 'active'
-                    AND p.featured_image IS NOT NULL
-                    ORDER BY p.created_at DESC
-                    LIMIT ?";
-            
-            $this->db->query($sql, [$limit]);
-            return $this->db->findAll();
-        } catch (Exception $e) {
-            error_log("Get Featured Programs Error: " . $e->getMessage());
-            throw new Exception("Failed to get featured programs");
-        }
+        $sql = "SELECT COUNT(*) as count FROM program_participants WHERE program_id = ?";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$programId]);
+        $count = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
+
+        return $count >= $program['max_participants'];
     }
 
     /**
      * Get program statistics
      */
     public function getStatistics() {
-        try {
-            $stats = [
-                'total' => $this->count(),
-                'active' => $this->count(['status' => 'active']),
-                'inactive' => $this->count(['status' => 'inactive'])
-            ];
+        $stats = [
+            'total_programs' => 0,
+            'active_programs' => 0,
+            'total_participants' => 0,
+            'by_category' => [],
+            'by_status' => [],
+            'popular_programs' => []
+        ];
 
-            // Get programs by category
-            $sql = "SELECT c.name, COUNT(*) as count 
-                    FROM {$this->table} p
-                    LEFT JOIN categories c ON p.category_id = c.id
-                    WHERE p.status = 'active'
-                    GROUP BY p.category_id";
-            
-            $this->db->query($sql);
-            $stats['by_category'] = $this->db->findAll();
+        // Get basic counts
+        $sql = "SELECT 
+                COUNT(*) as total_programs,
+                SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) as active_programs
+                FROM {$this->table}";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $basic = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        $stats['total_programs'] = $basic['total_programs'];
+        $stats['active_programs'] = $basic['active_programs'];
 
-            return $stats;
-        } catch (Exception $e) {
-            error_log("Get Program Statistics Error: " . $e->getMessage());
-            throw new Exception("Failed to get program statistics");
-        }
+        // Get total participants
+        $sql = "SELECT COUNT(*) as count FROM program_participants";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['total_participants'] = $stmt->fetch(PDO::FETCH_ASSOC)['count'];
+
+        // Get counts by category
+        $sql = "SELECT c.name, COUNT(*) as count 
+                FROM {$this->table} p 
+                LEFT JOIN categories c ON p.category_id = c.id 
+                GROUP BY c.name";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['by_category'] = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+
+        // Get counts by status
+        $sql = "SELECT status, COUNT(*) as count FROM {$this->table} GROUP BY status";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['by_status'] = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+
+        // Get most popular programs
+        $sql = "SELECT p.*, COUNT(pp.user_id) as participant_count 
+                FROM {$this->table} p 
+                LEFT JOIN program_participants pp ON p.id = pp.program_id 
+                GROUP BY p.id 
+                ORDER BY participant_count DESC 
+                LIMIT 5";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $stats['popular_programs'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        return $stats;
     }
 
     /**
-     * Get latest programs
+     * Get user programs
      */
-    public function getLatest($limit = 5) {
-        try {
-            $sql = "SELECT p.*, c.name as category_name 
-                    FROM {$this->table} p
-                    LEFT JOIN categories c ON p.category_id = c.id
-                    WHERE p.status = 'active'
-                    ORDER BY p.created_at DESC
-                    LIMIT ?";
-            
-            $this->db->query($sql, [$limit]);
-            return $this->db->findAll();
-        } catch (Exception $e) {
-            error_log("Get Latest Programs Error: " . $e->getMessage());
-            throw new Exception("Failed to get latest programs");
-        }
+    public function getUserPrograms($userId) {
+        $sql = "SELECT p.*, c.name as category_name 
+                FROM {$this->table} p 
+                LEFT JOIN categories c ON p.category_id = c.id 
+                JOIN program_participants pp ON p.id = pp.program_id 
+                WHERE pp.user_id = ? 
+                ORDER BY p.created_at DESC";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$userId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     /**
-     * Get program categories with counts
+     * Get similar programs
      */
-    public function getCategoriesWithCounts() {
-        try {
-            $sql = "SELECT c.*, COUNT(p.id) as program_count 
-                    FROM categories c
-                    LEFT JOIN {$this->table} p ON c.id = p.category_id AND p.status = 'active'
-                    WHERE c.module = 'programs'
-                    GROUP BY c.id
-                    ORDER BY c.name ASC";
-            
-            $this->db->query($sql);
-            return $this->db->findAll();
-        } catch (Exception $e) {
-            error_log("Get Categories With Counts Error: " . $e->getMessage());
-            throw new Exception("Failed to get categories with counts");
+    public function getSimilar($programId, $limit = 3) {
+        $program = $this->find($programId);
+        if (!$program) {
+            return [];
         }
+
+        $sql = "SELECT p.*, c.name as category_name 
+                FROM {$this->table} p 
+                LEFT JOIN categories c ON p.category_id = c.id 
+                WHERE p.id != ? 
+                AND p.category_id = ? 
+                AND p.status = 'active' 
+                ORDER BY p.created_at DESC 
+                LIMIT ?";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$programId, $program['category_id'], $limit]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
     /**
-     * Toggle program status
+     * Get participant count
      */
-    public function toggleStatus($id) {
-        try {
-            $program = $this->find($id);
-            if (!$program) {
-                throw new Exception("Program not found");
-            }
+    public function getParticipantCount($programId) {
+        $sql = "SELECT COUNT(*) as count FROM program_participants WHERE program_id = ?";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$programId]);
+        return $stmt->fetch(PDO::FETCH_ASSOC)['count'];
+    }
 
-            $newStatus = $program['status'] === 'active' ? 'inactive' : 'active';
-            return $this->update($id, ['status' => $newStatus]);
-        } catch (Exception $e) {
-            error_log("Toggle Program Status Error: " . $e->getMessage());
-            throw new Exception("Failed to toggle program status");
-        }
+    /**
+     * Check if user is enrolled
+     */
+    public function isUserEnrolled($programId, $userId) {
+        $sql = "SELECT COUNT(*) as count 
+                FROM program_participants 
+                WHERE program_id = ? AND user_id = ?";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$programId, $userId]);
+        return $stmt->fetch(PDO::FETCH_ASSOC)['count'] > 0;
     }
 
     /**
      * Get program schedule
-     * This assumes you have a program_schedule table relating programs to events/dates
      */
     public function getSchedule($programId) {
-        try {
-            $sql = "SELECT ps.*, e.title as event_title, e.location 
-                    FROM program_schedule ps
-                    LEFT JOIN events e ON ps.event_id = e.id
-                    WHERE ps.program_id = ?
-                    ORDER BY ps.start_date ASC";
-            
-            $this->db->query($sql, [$programId]);
-            return $this->db->findAll();
-        } catch (Exception $e) {
-            error_log("Get Program Schedule Error: " . $e->getMessage());
-            throw new Exception("Failed to get program schedule");
-        }
+        $sql = "SELECT * FROM program_schedule WHERE program_id = ? ORDER BY date, start_time";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$programId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /**
+     * Add schedule item
+     */
+    public function addScheduleItem($programId, $data) {
+        $sql = "INSERT INTO program_schedule 
+                (program_id, title, description, date, start_time, end_time, location) 
+                VALUES (?, ?, ?, ?, ?, ?, ?)";
+        
+        $stmt = $this->db->prepare($sql);
+        return $stmt->execute([
+            $programId,
+            $data['title'],
+            $data['description'],
+            $data['date'],
+            $data['start_time'],
+            $data['end_time'],
+            $data['location']
+        ]);
     }
 }
