@@ -1,0 +1,14 @@
+/* Basic styles for EAVA */
+body {
+    font-family: Arial, sans-serif;
+    background-color: #f8f9fa;
+    color: #343a40;
+}
+
+h1 {
+    margin-bottom: 20px;
+}
+
+.container {
+    padding: 20px;
+}
