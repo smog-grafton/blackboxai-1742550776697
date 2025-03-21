@@ -5,137 +5,175 @@ class Utility {
      */
     public static function generateSlug($string) {
         // Convert to lowercase and remove accents
-        $string = strtolower(trim(strip_tags($string)));
-        $string = iconv('UTF-8', 'ASCII//TRANSLIT', $string);
+        $string = strtolower(trim(self::removeAccents($string)));
         
         // Replace non-alphanumeric characters with hyphens
         $string = preg_replace('/[^a-z0-9-]/', '-', $string);
-        // Replace multiple hyphens with single hyphen
-        $string = preg_replace('/-+/', '-', $string);
-        // Remove leading and trailing hyphens
-        $string = trim($string, '-');
         
-        return $string;
+        // Remove multiple consecutive hyphens
+        $string = preg_replace('/-+/', '-', $string);
+        
+        // Remove leading and trailing hyphens
+        return trim($string, '-');
     }
 
     /**
-     * Handle file upload with security checks
+     * Remove accents from a string
      */
-    public static function handleFileUpload($file, $allowedTypes, $uploadDir, $maxSize = 5242880) { // 5MB default
-        try {
-            if (!isset($file['error']) || is_array($file['error'])) {
-                throw new Exception('Invalid file parameters');
-            }
-
-            switch ($file['error']) {
-                case UPLOAD_ERR_OK:
-                    break;
-                case UPLOAD_ERR_INI_SIZE:
-                case UPLOAD_ERR_FORM_SIZE:
-                    throw new Exception('File size exceeds limit');
-                case UPLOAD_ERR_NO_FILE:
-                    throw new Exception('No file uploaded');
-                default:
-                    throw new Exception('Unknown file upload error');
-            }
-
-            if ($file['size'] > $maxSize) {
-                throw new Exception('File size exceeds limit');
-            }
-
-            $finfo = new finfo(FILEINFO_MIME_TYPE);
-            $mimeType = $finfo->file($file['tmp_name']);
-
-            if (!in_array($mimeType, $allowedTypes)) {
-                throw new Exception('Invalid file type');
-            }
-
-            // Create unique filename
-            $extension = pathinfo($file['name'], PATHINFO_EXTENSION);
-            $filename = uniqid() . '_' . time() . '.' . $extension;
-            $filepath = $uploadDir . $filename;
-
-            if (!move_uploaded_file($file['tmp_name'], $filepath)) {
-                throw new Exception('Failed to move uploaded file');
-            }
-
-            return [
-                'filename' => $filename,
-                'filepath' => $filepath,
-                'mime_type' => $mimeType,
-                'size' => $file['size']
-            ];
-        } catch (Exception $e) {
-            error_log("File Upload Error: " . $e->getMessage());
-            throw $e;
+    public static function removeAccents($string) {
+        if (!preg_match('/[\x80-\xff]/', $string)) {
+            return $string;
         }
-    }
 
-    /**
-     * Format date for display
-     */
-    public static function formatDate($date, $format = 'M j, Y') {
-        return date($format, strtotime($date));
+        $chars = [
+            // Decompositions for Latin-1 Supplement
+            chr(195).chr(128) => 'A', chr(195).chr(129) => 'A',
+            chr(195).chr(130) => 'A', chr(195).chr(131) => 'A',
+            chr(195).chr(132) => 'A', chr(195).chr(133) => 'A',
+            chr(195).chr(135) => 'C', chr(195).chr(136) => 'E',
+            chr(195).chr(137) => 'E', chr(195).chr(138) => 'E',
+            chr(195).chr(139) => 'E', chr(195).chr(140) => 'I',
+            chr(195).chr(141) => 'I', chr(195).chr(142) => 'I',
+            chr(195).chr(143) => 'I', chr(195).chr(145) => 'N',
+            chr(195).chr(146) => 'O', chr(195).chr(147) => 'O',
+            chr(195).chr(148) => 'O', chr(195).chr(149) => 'O',
+            chr(195).chr(150) => 'O', chr(195).chr(153) => 'U',
+            chr(195).chr(154) => 'U', chr(195).chr(155) => 'U',
+            chr(195).chr(156) => 'U', chr(195).chr(157) => 'Y',
+            chr(195).chr(159) => 's', chr(195).chr(160) => 'a',
+            chr(195).chr(161) => 'a', chr(195).chr(162) => 'a',
+            chr(195).chr(163) => 'a', chr(195).chr(164) => 'a',
+            chr(195).chr(165) => 'a', chr(195).chr(167) => 'c',
+            chr(195).chr(168) => 'e', chr(195).chr(169) => 'e',
+            chr(195).chr(170) => 'e', chr(195).chr(171) => 'e',
+            chr(195).chr(172) => 'i', chr(195).chr(173) => 'i',
+            chr(195).chr(174) => 'i', chr(195).chr(175) => 'i',
+            chr(195).chr(177) => 'n', chr(195).chr(178) => 'o',
+            chr(195).chr(179) => 'o', chr(195).chr(180) => 'o',
+            chr(195).chr(181) => 'o', chr(195).chr(182) => 'o',
+            chr(195).chr(185) => 'u', chr(195).chr(186) => 'u',
+            chr(195).chr(187) => 'u', chr(195).chr(188) => 'u',
+            chr(195).chr(189) => 'y', chr(195).chr(191) => 'y'
+        ];
+
+        return strtr($string, $chars);
     }
 
     /**
      * Format currency amount
      */
-    public static function formatCurrency($amount, $currency = 'USD') {
-        $currencies = [
-            'USD' => ['symbol' => '$', 'decimals' => 2],
-            'EUR' => ['symbol' => '€', 'decimals' => 2],
-            'GBP' => ['symbol' => '£', 'decimals' => 2],
-            'KES' => ['symbol' => 'KSh', 'decimals' => 2],
-            'UGX' => ['symbol' => 'USh', 'decimals' => 0],
-            'TZS' => ['symbol' => 'TSh', 'decimals' => 0]
+    public static function formatCurrency($amount, $currency = 'USD', $decimals = 2) {
+        $symbols = [
+            'USD' => '$',
+            'EUR' => '€',
+            'GBP' => '£',
+            'JPY' => '¥'
         ];
 
-        $currencyInfo = $currencies[$currency] ?? ['symbol' => '$', 'decimals' => 2];
-        return $currencyInfo['symbol'] . number_format($amount, $currencyInfo['decimals']);
+        $symbol = $symbols[$currency] ?? $currency;
+        return $symbol . number_format($amount, $decimals);
     }
 
     /**
-     * Truncate text to specified length
+     * Format file size
      */
-    public static function truncateText($text, $length = 100, $append = '...') {
-        if (strlen($text) <= $length) {
-            return $text;
+    public static function formatFileSize($bytes) {
+        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
+        $bytes = max($bytes, 0);
+        $pow = floor(($bytes ? log($bytes) : 0) / log(1024));
+        $pow = min($pow, count($units) - 1);
+        $bytes /= pow(1024, $pow);
+        
+        return round($bytes, 2) . ' ' . $units[$pow];
+    }
+
+    /**
+     * Format date/time
+     */
+    public static function formatDateTime($datetime, $format = 'Y-m-d H:i:s') {
+        return date($format, strtotime($datetime));
+    }
+
+    /**
+     * Get time ago string
+     */
+    public static function timeAgo($datetime) {
+        $time = strtotime($datetime);
+        $now = time();
+        $diff = $now - $time;
+
+        if ($diff < 60) {
+            return 'just now';
+        } elseif ($diff < 3600) {
+            $mins = floor($diff / 60);
+            return $mins . ' minute' . ($mins > 1 ? 's' : '') . ' ago';
+        } elseif ($diff < 86400) {
+            $hours = floor($diff / 3600);
+            return $hours . ' hour' . ($hours > 1 ? 's' : '') . ' ago';
+        } elseif ($diff < 604800) {
+            $days = floor($diff / 86400);
+            return $days . ' day' . ($days > 1 ? 's' : '') . ' ago';
+        } elseif ($diff < 2592000) {
+            $weeks = floor($diff / 604800);
+            return $weeks . ' week' . ($weeks > 1 ? 's' : '') . ' ago';
+        } else {
+            return date('F j, Y', $time);
         }
-        
-        $truncated = substr($text, 0, $length);
-        // Ensure we don't cut in the middle of a word
-        $lastSpace = strrpos($truncated, ' ');
-        
-        return substr($truncated, 0, $lastSpace) . $append;
     }
 
     /**
      * Generate random string
      */
-    public static function generateRandomString($length = 10) {
-        $characters = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
-        $randomString = '';
-        
-        for ($i = 0; $i < $length; $i++) {
-            $randomString .= $characters[rand(0, strlen($characters) - 1)];
-        }
-        
-        return $randomString;
+    public static function randomString($length = 32) {
+        return bin2hex(random_bytes($length / 2));
     }
 
     /**
-     * Clean input data
+     * Sanitize HTML content
      */
-    public static function cleanInput($data) {
-        if (is_array($data)) {
-            return array_map([self::class, 'cleanInput'], $data);
+    public static function sanitizeHtml($html) {
+        return htmlspecialchars($html, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    }
+
+    /**
+     * Truncate text
+     */
+    public static function truncate($text, $length = 100, $append = '...') {
+        if (strlen($text) <= $length) {
+            return $text;
         }
-        
-        $data = trim($data);
-        $data = stripslashes($data);
-        $data = htmlspecialchars($data, ENT_QUOTES, 'UTF-8');
-        return $data;
+
+        $truncated = substr($text, 0, $length);
+        $lastSpace = strrpos($truncated, ' ');
+
+        if ($lastSpace !== false) {
+            $truncated = substr($truncated, 0, $lastSpace);
+        }
+
+        return $truncated . $append;
+    }
+
+    /**
+     * Get file extension
+     */
+    public static function getFileExtension($filename) {
+        return strtolower(pathinfo($filename, PATHINFO_EXTENSION));
+    }
+
+    /**
+     * Check if file is image
+     */
+    public static function isImage($filename) {
+        $extensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+        return in_array(self::getFileExtension($filename), $extensions);
+    }
+
+    /**
+     * Generate unique filename
+     */
+    public static function generateUniqueFilename($filename) {
+        $extension = self::getFileExtension($filename);
+        return uniqid() . '_' . time() . '.' . $extension;
     }
 
     /**
@@ -153,148 +191,68 @@ class Utility {
     }
 
     /**
-     * Generate breadcrumbs
+     * Get gravatar URL
      */
-    public static function generateBreadcrumbs($items) {
-        $html = '<nav class="text-gray-500 py-2">';
-        $html .= '<ol class="list-none p-0 inline-flex">';
-        
-        $lastKey = array_key_last($items);
-        foreach ($items as $key => $item) {
-            if ($key === $lastKey) {
-                $html .= '<li class="text-gray-700">' . htmlspecialchars($item['label']) . '</li>';
-            } else {
-                $html .= '<li>';
-                $html .= '<a href="' . htmlspecialchars($item['url']) . '" class="text-indigo-600 hover:text-indigo-800">';
-                $html .= htmlspecialchars($item['label']);
-                $html .= '</a>';
-                $html .= '<span class="mx-2">/</span>';
-                $html .= '</li>';
-            }
-        }
-        
-        $html .= '</ol>';
-        $html .= '</nav>';
-        
-        return $html;
+    public static function getGravatar($email, $size = 80) {
+        $hash = md5(strtolower(trim($email)));
+        return "https://www.gravatar.com/avatar/{$hash}?s={$size}&d=mp";
     }
 
     /**
-     * Get file extension from mime type
+     * Convert array to CSV
      */
-    public static function getExtensionFromMime($mimeType) {
-        $mimeMap = [
-            'image/jpeg' => 'jpg',
-            'image/png' => 'png',
-            'image/gif' => 'gif',
-            'application/pdf' => 'pdf',
-            'video/mp4' => 'mp4',
-            'video/quicktime' => 'mov',
-            'application/msword' => 'doc',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => 'docx',
-            'application/vnd.ms-excel' => 'xls',
-            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => 'xlsx'
-        ];
-
-        return $mimeMap[$mimeType] ?? '';
-    }
-
-    /**
-     * Get human readable file size
-     */
-    public static function formatFileSize($bytes) {
-        $units = ['B', 'KB', 'MB', 'GB', 'TB'];
-        $bytes = max($bytes, 0);
-        $pow = floor(($bytes ? log($bytes) : 0) / log(1024));
-        $pow = min($pow, count($units) - 1);
-        
-        $bytes /= pow(1024, $pow);
-        
-        return round($bytes, 2) . ' ' . $units[$pow];
-    }
-
-    /**
-     * Generate pagination HTML
-     */
-    public static function generatePagination($currentPage, $totalPages, $urlPattern) {
-        if ($totalPages <= 1) return '';
-
-        $html = '<div class="flex items-center justify-center mt-8">';
-        $html .= '<nav class="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">';
-
-        // Previous page
-        if ($currentPage > 1) {
-            $prevUrl = str_replace('{page}', $currentPage - 1, $urlPattern);
-            $html .= '<a href="' . $prevUrl . '" class="relative inline-flex items-center px-2 py-2 rounded-l-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50">';
-            $html .= '<span class="sr-only">Previous</span>';
-            $html .= '<i class="fas fa-chevron-left"></i>';
-            $html .= '</a>';
+    public static function arrayToCsv(array $data) {
+        if (empty($data)) {
+            return '';
         }
 
-        // Page numbers
-        for ($i = 1; $i <= $totalPages; $i++) {
-            if ($i === $currentPage) {
-                $html .= '<span class="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-indigo-50 text-sm font-medium text-indigo-600">' . $i . '</span>';
-            } else {
-                $pageUrl = str_replace('{page}', $i, $urlPattern);
-                $html .= '<a href="' . $pageUrl . '" class="relative inline-flex items-center px-4 py-2 border border-gray-300 bg-white text-sm font-medium text-gray-700 hover:bg-gray-50">' . $i . '</a>';
+        $output = fopen('php://temp', 'r+');
+        foreach ($data as $row) {
+            fputcsv($output, $row);
+        }
+        rewind($output);
+        $csv = stream_get_contents($output);
+        fclose($output);
+
+        return $csv;
+    }
+
+    /**
+     * Parse CSV to array
+     */
+    public static function csvToArray($csv) {
+        $array = array_map('str_getcsv', explode("\n", $csv));
+        $headers = array_shift($array);
+        $data = [];
+
+        foreach ($array as $row) {
+            if (count($row) === count($headers)) {
+                $data[] = array_combine($headers, $row);
             }
         }
 
-        // Next page
-        if ($currentPage < $totalPages) {
-            $nextUrl = str_replace('{page}', $currentPage + 1, $urlPattern);
-            $html .= '<a href="' . $nextUrl . '" class="relative inline-flex items-center px-2 py-2 rounded-r-md border border-gray-300 bg-white text-sm font-medium text-gray-500 hover:bg-gray-50">';
-            $html .= '<span class="sr-only">Next</span>';
-            $html .= '<i class="fas fa-chevron-right"></i>';
-            $html .= '</a>';
-        }
-
-        $html .= '</nav>';
-        $html .= '</div>';
-
-        return $html;
+        return $data;
     }
 
     /**
-     * Generate meta tags for SEO
+     * Get YouTube video ID from URL
      */
-    public static function generateMetaTags($data) {
-        $meta = '';
-        
-        // Basic meta tags
-        if (!empty($data['title'])) {
-            $meta .= '<title>' . htmlspecialchars($data['title']) . '</title>';
-            $meta .= '<meta property="og:title" content="' . htmlspecialchars($data['title']) . '">';
+    public static function getYoutubeId($url) {
+        $pattern = '/(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i';
+        if (preg_match($pattern, $url, $matches)) {
+            return $matches[1];
         }
-        
-        if (!empty($data['description'])) {
-            $meta .= '<meta name="description" content="' . htmlspecialchars($data['description']) . '">';
-            $meta .= '<meta property="og:description" content="' . htmlspecialchars($data['description']) . '">';
+        return null;
+    }
+
+    /**
+     * Get Vimeo video ID from URL
+     */
+    public static function getVimeoId($url) {
+        $pattern = '/(?:vimeo\.com\/(?:channels\/(?:\w+\/)?|groups\/(?:[^\/]*)\/videos\/|album\/(?:\d+)\/video\/|video\/|)(\d+)(?:[a-zA-Z0-9_-]+)?)/i';
+        if (preg_match($pattern, $url, $matches)) {
+            return $matches[1];
         }
-        
-        if (!empty($data['keywords'])) {
-            $meta .= '<meta name="keywords" content="' . htmlspecialchars($data['keywords']) . '">';
-        }
-        
-        // Open Graph tags
-        if (!empty($data['image'])) {
-            $meta .= '<meta property="og:image" content="' . htmlspecialchars($data['image']) . '">';
-        }
-        
-        if (!empty($data['url'])) {
-            $meta .= '<meta property="og:url" content="' . htmlspecialchars($data['url']) . '">';
-        }
-        
-        $meta .= '<meta property="og:type" content="' . (isset($data['type']) ? htmlspecialchars($data['type']) : 'website') . '">';
-        
-        // Twitter Card tags
-        $meta .= '<meta name="twitter:card" content="summary_large_image">';
-        
-        if (!empty($data['twitter_handle'])) {
-            $meta .= '<meta name="twitter:site" content="@' . htmlspecialchars($data['twitter_handle']) . '">';
-        }
-        
-        return $meta;
+        return null;
     }
 }
