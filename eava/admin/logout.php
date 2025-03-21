@@ -1,11 +1,28 @@
 <?php
-require_once '../config/config.php';
-require_once '../classes/User.php';
+require_once __DIR__ . '/../classes/Session.php';
+require_once __DIR__ . '/../classes/Logger.php';
 
-session_start();
+$session = Session::getInstance();
+$logger = new Logger();
 
-$user = new User();
-$user->logout();
+// Log the logout action if user was logged in
+if ($session->isLoggedIn()) {
+    $user = $session->getUser();
+    $logger->info('Admin logout', [
+        'user_id' => $user['id'],
+        'username' => $user['username'],
+        'ip' => $_SERVER['REMOTE_ADDR']
+    ]);
+}
 
-header('Location: index.php');
+// Clear remember token cookie if exists
+if (isset($_COOKIE['remember_token'])) {
+    setcookie('remember_token', '', time() - 3600, '/', '', true, true);
+}
+
+// Destroy session
+$session->logout();
+
+// Redirect to login page
+header('Location: /admin/login.php');
 exit;
