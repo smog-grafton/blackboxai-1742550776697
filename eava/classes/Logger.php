@@ -1,40 +1,18 @@
 <?php
 class Logger {
     private static $instance = null;
+    private $config;
+    private $logFile;
     private $logPath;
-    private $logLevel;
-
-    // Log levels
-    const EMERGENCY = 'emergency';
-    const ALERT     = 'alert';
-    const CRITICAL  = 'critical';
-    const ERROR     = 'error';
-    const WARNING   = 'warning';
-    const NOTICE    = 'notice';
-    const INFO      = 'info';
-    const DEBUG     = 'debug';
-
-    private $logLevels = [
-        self::EMERGENCY => 0,
-        self::ALERT     => 1,
-        self::CRITICAL  => 2,
-        self::ERROR     => 3,
-        self::WARNING   => 4,
-        self::NOTICE    => 5,
-        self::INFO      => 6,
-        self::DEBUG     => 7
-    ];
 
     private function __construct() {
-        $this->logPath = __DIR__ . '/../logs/';
-        $this->logLevel = self::DEBUG; // Default to most verbose logging
-
-        // Create logs directory if it doesn't exist
-        if (!is_dir($this->logPath)) {
-            mkdir($this->logPath, 0755, true);
-        }
+        $this->config = require __DIR__ . '/../config/config.php';
+        $this->setupLogger();
     }
 
+    /**
+     * Get Logger instance (Singleton)
+     */
     public static function getInstance() {
         if (self::$instance === null) {
             self::$instance = new self();
@@ -43,131 +21,161 @@ class Logger {
     }
 
     /**
-     * Set the minimum log level
+     * Setup logger configuration
      */
-    public function setLogLevel($level) {
-        if (!isset($this->logLevels[$level])) {
-            throw new Exception("Invalid log level");
+    private function setupLogger() {
+        $this->logPath = __DIR__ . '/../logs';
+        
+        // Create logs directory if it doesn't exist
+        if (!file_exists($this->logPath)) {
+            mkdir($this->logPath, 0755, true);
         }
-        $this->logLevel = $level;
+
+        // Set log file based on channel configuration
+        switch ($this->config['log_channel']) {
+            case 'daily':
+                $this->logFile = $this->logPath . '/eava-' . date('Y-m-d') . '.log';
+                break;
+            case 'single':
+                $this->logFile = $this->logPath . '/eava.log';
+                break;
+            default:
+                $this->logFile = $this->logPath . '/eava.log';
+        }
     }
 
     /**
-     * Log a message
+     * Write log entry
      */
-    public function log($level, $message, array $context = []) {
-        if (!isset($this->logLevels[$level])) {
-            throw new Exception("Invalid log level");
-        }
-
-        // Check if this log level should be recorded
-        if ($this->logLevels[$level] > $this->logLevels[$this->logLevel]) {
+    private function write($level, $message, array $context = []) {
+        // Check if logging is enabled for this level
+        if (!$this->isLevelEnabled($level)) {
             return false;
         }
 
-        // Format the log entry
-        $logEntry = $this->formatLogEntry($level, $message, $context);
-
-        // Write to appropriate log file
-        $logFile = $this->logPath . date('Y-m-d') . '.log';
-        
-        return file_put_contents(
-            $logFile,
-            $logEntry . PHP_EOL,
-            FILE_APPEND | LOCK_EX
-        );
-    }
-
-    /**
-     * Format a log entry
-     */
-    private function formatLogEntry($level, $message, array $context = []) {
         $timestamp = date('Y-m-d H:i:s');
-        $message = $this->interpolate($message, $context);
-
-        return sprintf(
-            '[%s] %s: %s',
+        $contextStr = empty($context) ? '' : json_encode($context);
+        
+        $logEntry = sprintf(
+            "[%s] %s: %s %s\n",
             $timestamp,
             strtoupper($level),
-            $message
+            $message,
+            $contextStr
         );
+
+        // Rotate log files if needed
+        $this->rotateLogFiles();
+
+        // Write to log file
+        return file_put_contents($this->logFile, $logEntry, FILE_APPEND | LOCK_EX);
     }
 
     /**
-     * Interpolate context values into message placeholders
+     * Check if logging level is enabled
      */
-    private function interpolate($message, array $context = []) {
-        $replace = [];
-        foreach ($context as $key => $val) {
-            if (is_string($val) || method_exists($val, '__toString')) {
-                $replace['{' . $key . '}'] = $val;
+    private function isLevelEnabled($level) {
+        $levels = [
+            'emergency' => 800,
+            'alert'     => 700,
+            'critical'  => 600,
+            'error'     => 500,
+            'warning'   => 400,
+            'notice'    => 300,
+            'info'      => 200,
+            'debug'     => 100
+        ];
+
+        $configLevel = $this->config['log_level'];
+        return $levels[$level] >= $levels[$configLevel];
+    }
+
+    /**
+     * Rotate log files
+     */
+    private function rotateLogFiles() {
+        if ($this->config['log_channel'] === 'daily') {
+            $files = glob($this->logPath . '/eava-*.log');
+            $maxFiles = $this->config['log_max_files'];
+
+            if (count($files) > $maxFiles) {
+                usort($files, function($a, $b) {
+                    return filemtime($a) - filemtime($b);
+                });
+
+                $filesToDelete = array_slice($files, 0, count($files) - $maxFiles);
+                foreach ($filesToDelete as $file) {
+                    unlink($file);
+                }
             }
         }
-
-        return strtr($message, $replace);
     }
 
     /**
-     * Emergency log
-     */
-    public function emergency($message, array $context = []) {
-        $this->log(self::EMERGENCY, $message, $context);
-    }
-
-    /**
-     * Alert log
-     */
-    public function alert($message, array $context = []) {
-        $this->log(self::ALERT, $message, $context);
-    }
-
-    /**
-     * Critical log
-     */
-    public function critical($message, array $context = []) {
-        $this->log(self::CRITICAL, $message, $context);
-    }
-
-    /**
-     * Error log
-     */
-    public function error($message, array $context = []) {
-        $this->log(self::ERROR, $message, $context);
-    }
-
-    /**
-     * Warning log
-     */
-    public function warning($message, array $context = []) {
-        $this->log(self::WARNING, $message, $context);
-    }
-
-    /**
-     * Notice log
-     */
-    public function notice($message, array $context = []) {
-        $this->log(self::NOTICE, $message, $context);
-    }
-
-    /**
-     * Info log
-     */
-    public function info($message, array $context = []) {
-        $this->log(self::INFO, $message, $context);
-    }
-
-    /**
-     * Debug log
+     * Log debug message
      */
     public function debug($message, array $context = []) {
-        $this->log(self::DEBUG, $message, $context);
+        return $this->write('debug', $message, $context);
     }
 
     /**
-     * Get logs by date
+     * Log info message
      */
-    public function getLogsByDate($date) {
-        $logFile = $this->logPath . $date . '.log';
+    public function info($message, array $context = []) {
+        return $this->write('info', $message, $context);
+    }
+
+    /**
+     * Log notice message
+     */
+    public function notice($message, array $context = []) {
+        return $this->write('notice', $message, $context);
+    }
+
+    /**
+     * Log warning message
+     */
+    public function warning($message, array $context = []) {
+        return $this->write('warning', $message, $context);
+    }
+
+    /**
+     * Log error message
+     */
+    public function error($message, array $context = []) {
+        return $this->write('error', $message, $context);
+    }
+
+    /**
+     * Log critical message
+     */
+    public function critical($message, array $context = []) {
+        return $this->write('critical', $message, $context);
+    }
+
+    /**
+     * Log alert message
+     */
+    public function alert($message, array $context = []) {
+        return $this->write('alert', $message, $context);
+    }
+
+    /**
+     * Log emergency message
+     */
+    public function emergency($message, array $context = []) {
+        return $this->write('emergency', $message, $context);
+    }
+
+    /**
+     * Get all logs for a specific date
+     */
+    public function getLogs($date = null) {
+        if ($date === null) {
+            $date = date('Y-m-d');
+        }
+
+        $logFile = $this->logPath . '/eava-' . $date . '.log';
         if (!file_exists($logFile)) {
             return [];
         }
@@ -176,11 +184,12 @@ class Logger {
         $lines = file($logFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
         
         foreach ($lines as $line) {
-            if (preg_match('/\[(.*?)\] (\w+): (.*)/', $line, $matches)) {
+            if (preg_match('/\[(.*?)\] (\w+): (.*?) ({.*})?/', $line, $matches)) {
                 $logs[] = [
                     'timestamp' => $matches[1],
                     'level' => strtolower($matches[2]),
-                    'message' => $matches[3]
+                    'message' => $matches[3],
+                    'context' => isset($matches[4]) ? json_decode($matches[4], true) : []
                 ];
             }
         }
@@ -189,84 +198,38 @@ class Logger {
     }
 
     /**
-     * Get logs by level
+     * Clear logs
      */
-    public function getLogsByLevel($level, $date = null) {
-        if (!isset($this->logLevels[$level])) {
-            throw new Exception("Invalid log level");
-        }
-
-        $date = $date ?? date('Y-m-d');
-        $logs = $this->getLogsByDate($date);
-        
-        return array_filter($logs, function($log) use ($level) {
-            return $log['level'] === strtolower($level);
-        });
-    }
-
-    /**
-     * Clear old logs
-     */
-    public function clearOldLogs($daysToKeep = 30) {
-        $files = glob($this->logPath . '*.log');
-        $now = time();
-
+    public function clear() {
+        $files = glob($this->logPath . '/eava-*.log');
         foreach ($files as $file) {
-            if (is_file($file)) {
-                if ($now - filemtime($file) >= 60 * 60 * 24 * $daysToKeep) {
-                    unlink($file);
-                }
-            }
+            unlink($file);
         }
     }
 
     /**
-     * Get available log dates
+     * Get log file size
      */
-    public function getAvailableLogDates() {
-        $files = glob($this->logPath . '*.log');
-        $dates = [];
-
-        foreach ($files as $file) {
-            $dates[] = basename($file, '.log');
+    public function getLogSize($date = null) {
+        if ($date === null) {
+            $date = date('Y-m-d');
         }
 
-        sort($dates);
-        return $dates;
+        $logFile = $this->logPath . '/eava-' . $date . '.log';
+        if (!file_exists($logFile)) {
+            return 0;
+        }
+
+        return filesize($logFile);
     }
 
     /**
-     * Search logs
+     * Prevent cloning of the instance (Singleton)
      */
-    public function searchLogs($searchTerm, $date = null, $level = null) {
-        $date = $date ?? date('Y-m-d');
-        $logs = $this->getLogsByDate($date);
-
-        return array_filter($logs, function($log) use ($searchTerm, $level) {
-            $matchesLevel = $level ? $log['level'] === strtolower($level) : true;
-            $matchesTerm = stripos($log['message'], $searchTerm) !== false;
-            return $matchesLevel && $matchesTerm;
-        });
-    }
+    private function __clone() {}
 
     /**
-     * Get log statistics
+     * Prevent unserializing of the instance (Singleton)
      */
-    public function getStatistics($date = null) {
-        $date = $date ?? date('Y-m-d');
-        $logs = $this->getLogsByDate($date);
-
-        $stats = [
-            'total' => count($logs),
-            'by_level' => []
-        ];
-
-        foreach ($this->logLevels as $level => $priority) {
-            $stats['by_level'][$level] = count(array_filter($logs, function($log) use ($level) {
-                return $log['level'] === $level;
-            }));
-        }
-
-        return $stats;
-    }
+    private function __wakeup() {}
 }
