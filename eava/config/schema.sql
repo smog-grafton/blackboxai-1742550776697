@@ -1,179 +1,217 @@
--- Create database if not exists
-CREATE DATABASE IF NOT EXISTS eava_db CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE eava_db;
+-- Database schema for EAVA
 
 -- Users table
-CREATE TABLE IF NOT EXISTS users (
-    id INT PRIMARY KEY AUTO_INCREMENT,
+CREATE TABLE users (
+    id INT AUTO_INCREMENT PRIMARY KEY,
     username VARCHAR(50) UNIQUE NOT NULL,
-    password VARCHAR(255) NOT NULL,
     email VARCHAR(100) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL,
     full_name VARCHAR(100) NOT NULL,
-    role ENUM('admin', 'editor', 'user') NOT NULL DEFAULT 'user',
-    status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+    role ENUM('admin', 'editor', 'user') DEFAULT 'user',
+    status ENUM('active', 'inactive', 'banned') DEFAULT 'active',
+    remember_token VARCHAR(100),
     last_login DATETIME,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB;
-
--- Settings table
-CREATE TABLE IF NOT EXISTS settings (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    setting_key VARCHAR(50) UNIQUE NOT NULL,
-    setting_value TEXT,
-    setting_group VARCHAR(50) NOT NULL,
-    is_public BOOLEAN DEFAULT TRUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB;
-
--- Pages table
-CREATE TABLE IF NOT EXISTS pages (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    title VARCHAR(255) NOT NULL,
-    slug VARCHAR(255) UNIQUE NOT NULL,
-    content LONGTEXT,
-    meta_description TEXT,
-    featured_image VARCHAR(255),
-    template VARCHAR(50) DEFAULT 'default',
-    status ENUM('published', 'draft') DEFAULT 'draft',
-    author_id INT,
-    parent_id INT DEFAULT NULL,
-    order_index INT DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE SET NULL,
-    FOREIGN KEY (parent_id) REFERENCES pages(id) ON DELETE SET NULL
-) ENGINE=InnoDB;
+);
 
 -- Categories table
-CREATE TABLE IF NOT EXISTS categories (
-    id INT PRIMARY KEY AUTO_INCREMENT,
+CREATE TABLE categories (
+    id INT AUTO_INCREMENT PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
     slug VARCHAR(100) UNIQUE NOT NULL,
     description TEXT,
-    parent_id INT DEFAULT NULL,
     module VARCHAR(50) NOT NULL,
+    parent_id INT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (parent_id) REFERENCES categories(id) ON DELETE SET NULL
-) ENGINE=InnoDB;
+);
 
--- Posts table (for blog, news)
-CREATE TABLE IF NOT EXISTS posts (
-    id INT PRIMARY KEY AUTO_INCREMENT,
+-- Posts table
+CREATE TABLE posts (
+    id INT AUTO_INCREMENT PRIMARY KEY,
     title VARCHAR(255) NOT NULL,
     slug VARCHAR(255) UNIQUE NOT NULL,
-    content LONGTEXT,
+    content TEXT NOT NULL,
     excerpt TEXT,
     featured_image VARCHAR(255),
+    status ENUM('draft', 'published', 'archived') DEFAULT 'draft',
     category_id INT,
-    author_id INT,
-    status ENUM('published', 'draft') DEFAULT 'draft',
+    author_id INT NOT NULL,
     published_at DATETIME,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL,
-    FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE SET NULL
-) ENGINE=InnoDB;
-
--- Media table
-CREATE TABLE IF NOT EXISTS media (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    file_name VARCHAR(255) NOT NULL,
-    file_path VARCHAR(255) NOT NULL,
-    file_type VARCHAR(100) NOT NULL,
-    file_size INT NOT NULL,
-    uploaded_by INT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE SET NULL
-) ENGINE=InnoDB;
+    FOREIGN KEY (author_id) REFERENCES users(id)
+);
 
 -- Events table
-CREATE TABLE IF NOT EXISTS events (
-    id INT PRIMARY KEY AUTO_INCREMENT,
+CREATE TABLE events (
+    id INT AUTO_INCREMENT PRIMARY KEY,
     title VARCHAR(255) NOT NULL,
     slug VARCHAR(255) UNIQUE NOT NULL,
-    description LONGTEXT,
+    description TEXT NOT NULL,
+    location VARCHAR(255),
     start_date DATETIME NOT NULL,
     end_date DATETIME NOT NULL,
-    location VARCHAR(255),
     featured_image VARCHAR(255),
-    status ENUM('upcoming', 'ongoing', 'completed', 'cancelled') DEFAULT 'upcoming',
+    status ENUM('draft', 'published', 'cancelled', 'completed') DEFAULT 'draft',
+    is_featured BOOLEAN DEFAULT FALSE,
     category_id INT,
-    organizer_id INT,
+    organizer_id INT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL,
-    FOREIGN KEY (organizer_id) REFERENCES users(id) ON DELETE SET NULL
-) ENGINE=InnoDB;
+    FOREIGN KEY (organizer_id) REFERENCES users(id)
+);
 
 -- Projects table
-CREATE TABLE IF NOT EXISTS projects (
-    id INT PRIMARY KEY AUTO_INCREMENT,
+CREATE TABLE projects (
+    id INT AUTO_INCREMENT PRIMARY KEY,
     title VARCHAR(255) NOT NULL,
     slug VARCHAR(255) UNIQUE NOT NULL,
-    description LONGTEXT,
+    description TEXT NOT NULL,
+    goal_amount DECIMAL(10,2) NOT NULL,
+    current_amount DECIMAL(10,2) DEFAULT 0,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
     featured_image VARCHAR(255),
-    status ENUM('active', 'completed', 'upcoming') DEFAULT 'active',
-    start_date DATE,
-    end_date DATE,
+    status ENUM('draft', 'active', 'completed', 'cancelled') DEFAULT 'draft',
     category_id INT,
+    manager_id INT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
-) ENGINE=InnoDB;
+    FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL,
+    FOREIGN KEY (manager_id) REFERENCES users(id)
+);
 
 -- Programs table
-CREATE TABLE IF NOT EXISTS programs (
-    id INT PRIMARY KEY AUTO_INCREMENT,
+CREATE TABLE programs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
     title VARCHAR(255) NOT NULL,
     slug VARCHAR(255) UNIQUE NOT NULL,
-    description LONGTEXT,
-    featured_image VARCHAR(255),
-    status ENUM('active', 'inactive') DEFAULT 'active',
+    description TEXT NOT NULL,
+    goal_amount DECIMAL(10,2) NOT NULL,
+    status ENUM('draft', 'active', 'completed') DEFAULT 'draft',
     category_id INT,
+    coordinator_id INT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL
-) ENGINE=InnoDB;
+    FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL,
+    FOREIGN KEY (coordinator_id) REFERENCES users(id)
+);
 
--- Grants table
-CREATE TABLE IF NOT EXISTS grants (
-    id INT PRIMARY KEY AUTO_INCREMENT,
+-- Campaigns table
+CREATE TABLE campaigns (
+    id INT AUTO_INCREMENT PRIMARY KEY,
     title VARCHAR(255) NOT NULL,
     slug VARCHAR(255) UNIQUE NOT NULL,
-    description LONGTEXT,
-    amount DECIMAL(10,2),
-    deadline DATE,
-    status ENUM('open', 'closed', 'under_review') DEFAULT 'open',
+    description TEXT NOT NULL,
+    goal_amount DECIMAL(10,2) NOT NULL,
+    current_amount DECIMAL(10,2) DEFAULT 0,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    featured_image VARCHAR(255),
+    status ENUM('draft', 'active', 'completed', 'cancelled') DEFAULT 'draft',
+    category_id INT,
+    created_by INT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB;
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL,
+    FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
+-- Grants table
+CREATE TABLE grants (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    slug VARCHAR(255) UNIQUE NOT NULL,
+    description TEXT NOT NULL,
+    amount DECIMAL(10,2) NOT NULL,
+    deadline DATE NOT NULL,
+    status ENUM('draft', 'open', 'closed', 'awarded') DEFAULT 'draft',
+    category_id INT,
+    created_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE SET NULL,
+    FOREIGN KEY (created_by) REFERENCES users(id)
+);
 
 -- Donations table
-CREATE TABLE IF NOT EXISTS donations (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    donor_name VARCHAR(100),
-    email VARCHAR(100),
+CREATE TABLE donations (
+    id INT AUTO_INCREMENT PRIMARY KEY,
     amount DECIMAL(10,2) NOT NULL,
     currency VARCHAR(3) DEFAULT 'USD',
-    payment_method VARCHAR(50) NOT NULL,
-    transaction_id VARCHAR(100) UNIQUE,
-    status ENUM('pending', 'completed', 'failed') DEFAULT 'pending',
+    donor_name VARCHAR(100),
+    email VARCHAR(100),
+    phone VARCHAR(20),
+    transaction_id VARCHAR(100),
+    payment_method VARCHAR(50),
+    status ENUM('pending', 'completed', 'failed', 'refunded') DEFAULT 'pending',
+    campaign_id INT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE SET NULL
+);
+
+-- Media table
+CREATE TABLE media (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    file_name VARCHAR(255) NOT NULL,
+    file_path VARCHAR(255) NOT NULL,
+    file_type VARCHAR(50) NOT NULL,
+    file_size INT NOT NULL,
+    uploaded_by INT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (uploaded_by) REFERENCES users(id)
+);
+
+-- Settings table
+CREATE TABLE settings (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    name VARCHAR(100) UNIQUE NOT NULL,
+    value TEXT,
+    type VARCHAR(50) DEFAULT 'string',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-) ENGINE=InnoDB;
+);
 
--- Insert default admin user (password: Akiibu@989898)
-INSERT INTO users (username, password, email, full_name, role) 
-VALUES ('smogcoders', '$2y$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'smoggrafron@gmail.com', 'main admin', 'admin');
+-- Event Registrations table
+CREATE TABLE event_registrations (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    event_id INT NOT NULL,
+    user_id INT NOT NULL,
+    status ENUM('registered', 'cancelled', 'attended') DEFAULT 'registered',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (event_id) REFERENCES events(id),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
 
--- Insert default settings
-INSERT INTO settings (setting_key, setting_value, setting_group) VALUES
-('site_name', 'East Africa Visual Arts', 'general'),
-('site_description', 'Democracy and diversity are the cornerstone of a just and inclusive society', 'general'),
-('site_logo', '', 'general'),
-('primary_color', '#007bff', 'theme'),
-('secondary_color', '#6c757d', 'theme'),
-('footer_text', '© 2024 East Africa Visual Arts. All rights reserved.', 'general');
+-- Grant Applications table
+CREATE TABLE grant_applications (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    grant_id INT NOT NULL,
+    user_id INT NOT NULL,
+    content TEXT NOT NULL,
+    status ENUM('draft', 'submitted', 'under_review', 'approved', 'rejected') DEFAULT 'draft',
+    feedback TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (grant_id) REFERENCES grants(id),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+);
+
+-- Create indexes
+CREATE INDEX idx_posts_slug ON posts(slug);
+CREATE INDEX idx_events_slug ON events(slug);
+CREATE INDEX idx_projects_slug ON projects(slug);
+CREATE INDEX idx_programs_slug ON programs(slug);
+CREATE INDEX idx_campaigns_slug ON campaigns(slug);
+CREATE INDEX idx_grants_slug ON grants(slug);
+CREATE INDEX idx_categories_slug ON categories(slug);
+CREATE INDEX idx_donations_transaction ON donations(transaction_id);
+CREATE INDEX idx_media_type ON media(file_type);
