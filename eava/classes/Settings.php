@@ -1,190 +1,266 @@
 <?php
-require_once __DIR__ . '/../config/config.php';
-require_once __DIR__ . '/Database.php';
+class Settings extends Model {
+    protected $table = 'settings';
+    protected $fillable = [
+        'name',
+        'value',
+        'type'
+    ];
 
-class Settings {
-    private $db;
-    private static $instance = null;
-    private $settings = [];
-    private $modified = false;
+    private $cache = [];
 
-    private function __construct() {
-        $this->db = Database::getInstance();
-        $this->loadSettings();
-    }
-
-    public static function getInstance() {
-        if (self::$instance === null) {
-            self::$instance = new self();
+    /**
+     * Get a setting value
+     */
+    public function get($name, $default = null) {
+        if (isset($this->cache[$name])) {
+            return $this->cache[$name];
         }
-        return self::$instance;
-    }
 
-    private function loadSettings() {
-        try {
-            $this->db->query("SELECT setting_key, setting_value, setting_group FROM settings");
-            $results = $this->db->findAll();
-            
-            foreach ($results as $row) {
-                $this->settings[$row['setting_group']][$row['setting_key']] = $row['setting_value'];
-            }
-        } catch (Exception $e) {
-            error_log("Settings Load Error: " . $e->getMessage());
-            throw new Exception("Failed to load settings");
+        $sql = "SELECT value, type FROM {$this->table} WHERE name = ?";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$name]);
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$result) {
+            return $default;
         }
+
+        $value = $this->castValue($result['value'], $result['type']);
+        $this->cache[$name] = $value;
+
+        return $value;
     }
 
-    public function get($key, $group = 'general', $default = null) {
-        return $this->settings[$group][$key] ?? $default;
-    }
-
-    public function getGroup($group) {
-        return $this->settings[$group] ?? [];
-    }
-
-    public function set($key, $value, $group = 'general', $isPublic = true) {
-        try {
-            // Check if setting exists
-            $this->db->query(
-                "SELECT id FROM settings WHERE setting_key = ? AND setting_group = ?",
-                [$key, $group]
-            );
-            $existing = $this->db->findOne();
-
-            if ($existing) {
-                // Update existing setting
-                $this->db->query(
-                    "UPDATE settings SET setting_value = ?, is_public = ? WHERE setting_key = ? AND setting_group = ?",
-                    [$value, $isPublic, $key, $group]
-                );
-            } else {
-                // Insert new setting
-                $this->db->query(
-                    "INSERT INTO settings (setting_key, setting_value, setting_group, is_public) VALUES (?, ?, ?, ?)",
-                    [$key, $value, $group, $isPublic]
-                );
-            }
-
-            // Update local cache
-            $this->settings[$group][$key] = $value;
-            $this->modified = true;
-
-            return true;
-        } catch (Exception $e) {
-            error_log("Settings Update Error: " . $e->getMessage());
-            throw new Exception("Failed to update setting");
+    /**
+     * Set a setting value
+     */
+    public function set($name, $value, $type = null) {
+        if ($type === null) {
+            $type = $this->determineType($value);
         }
+
+        $value = $this->prepareValue($value);
+
+        $sql = "INSERT INTO {$this->table} (name, value, type) 
+                VALUES (?, ?, ?) 
+                ON DUPLICATE KEY UPDATE value = ?, type = ?";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$name, $value, $type, $value, $type]);
+
+        $this->cache[$name] = $this->castValue($value, $type);
+
+        return true;
     }
 
-    public function setMultiple($settings) {
+    /**
+     * Get multiple settings at once
+     */
+    public function getMany(array $names, $default = null) {
+        $placeholders = str_repeat('?,', count($names) - 1) . '?';
+        $sql = "SELECT name, value, type FROM {$this->table} WHERE name IN ($placeholders)";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($names);
+        $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $settings = [];
+        foreach ($names as $name) {
+            $settings[$name] = $default;
+        }
+
+        foreach ($results as $result) {
+            $settings[$result['name']] = $this->castValue($result['value'], $result['type']);
+            $this->cache[$result['name']] = $settings[$result['name']];
+        }
+
+        return $settings;
+    }
+
+    /**
+     * Set multiple settings at once
+     */
+    public function setMany(array $settings) {
         try {
             $this->db->beginTransaction();
 
-            foreach ($settings as $group => $groupSettings) {
-                foreach ($groupSettings as $key => $value) {
-                    $this->set($key, $value, $group);
-                }
+            foreach ($settings as $name => $value) {
+                $this->set($name, $value);
             }
 
             $this->db->commit();
             return true;
         } catch (Exception $e) {
             $this->db->rollBack();
-            error_log("Multiple Settings Update Error: " . $e->getMessage());
-            throw new Exception("Failed to update multiple settings");
+            throw $e;
         }
     }
 
-    public function delete($key, $group = 'general') {
-        try {
-            $this->db->query(
-                "DELETE FROM settings WHERE setting_key = ? AND setting_group = ?",
-                [$key, $group]
-            );
+    /**
+     * Delete a setting
+     */
+    public function delete($name) {
+        $sql = "DELETE FROM {$this->table} WHERE name = ?";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$name]);
 
-            unset($this->settings[$group][$key]);
-            $this->modified = true;
+        unset($this->cache[$name]);
 
-            return true;
-        } catch (Exception $e) {
-            error_log("Setting Delete Error: " . $e->getMessage());
-            throw new Exception("Failed to delete setting");
-        }
-    }
-
-    public function getAllGroups() {
-        return array_keys($this->settings);
-    }
-
-    public function getPublicSettings() {
-        try {
-            $this->db->query("SELECT setting_key, setting_value, setting_group FROM settings WHERE is_public = 1");
-            $results = $this->db->findAll();
-            
-            $publicSettings = [];
-            foreach ($results as $row) {
-                $publicSettings[$row['setting_group']][$row['setting_key']] = $row['setting_value'];
-            }
-            
-            return $publicSettings;
-        } catch (Exception $e) {
-            error_log("Public Settings Load Error: " . $e->getMessage());
-            throw new Exception("Failed to load public settings");
-        }
-    }
-
-    public function getSocialMediaSettings() {
-        return $this->getGroup('social_media') ?? [];
-    }
-
-    public function getPaymentSettings() {
-        return $this->getGroup('payment') ?? [];
-    }
-
-    public function getThemeSettings() {
-        return $this->getGroup('theme') ?? [];
-    }
-
-    public function updateSocialMediaSettings($settings) {
-        return $this->setMultiple(['social_media' => $settings]);
-    }
-
-    public function updatePaymentSettings($settings) {
-        return $this->setMultiple(['payment' => $settings]);
-    }
-
-    public function updateThemeSettings($settings) {
-        return $this->setMultiple(['theme' => $settings]);
-    }
-
-    public function clearCache() {
-        $this->settings = [];
-        $this->loadSettings();
-    }
-
-    public function isModified() {
-        return $this->modified;
-    }
-
-    public function validateSettingValue($key, $value, $group = 'general') {
-        // Add validation rules based on setting type
-        switch ($group) {
-            case 'theme':
-                if (strpos($key, 'color') !== false) {
-                    return preg_match('/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/', $value);
-                }
-                break;
-            case 'social_media':
-                if (strpos($key, 'url') !== false) {
-                    return filter_var($value, FILTER_VALIDATE_URL);
-                }
-                break;
-            case 'payment':
-                if (strpos($key, 'key') !== false) {
-                    return !empty($value) && strlen($value) >= 16;
-                }
-                break;
-        }
         return true;
+    }
+
+    /**
+     * Get all settings
+     */
+    public function getAll() {
+        $sql = "SELECT name, value, type FROM {$this->table}";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute();
+        $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $settings = [];
+        foreach ($results as $result) {
+            $value = $this->castValue($result['value'], $result['type']);
+            $settings[$result['name']] = $value;
+            $this->cache[$result['name']] = $value;
+        }
+
+        return $settings;
+    }
+
+    /**
+     * Clear settings cache
+     */
+    public function clearCache() {
+        $this->cache = [];
+    }
+
+    /**
+     * Determine value type
+     */
+    private function determineType($value) {
+        if (is_bool($value)) {
+            return 'boolean';
+        } elseif (is_int($value)) {
+            return 'integer';
+        } elseif (is_float($value)) {
+            return 'float';
+        } elseif (is_array($value)) {
+            return 'array';
+        } elseif (is_object($value)) {
+            return 'object';
+        } else {
+            return 'string';
+        }
+    }
+
+    /**
+     * Prepare value for storage
+     */
+    private function prepareValue($value) {
+        if (is_bool($value)) {
+            return $value ? '1' : '0';
+        } elseif (is_array($value) || is_object($value)) {
+            return json_encode($value);
+        } else {
+            return (string)$value;
+        }
+    }
+
+    /**
+     * Cast value to its proper type
+     */
+    private function castValue($value, $type) {
+        switch ($type) {
+            case 'boolean':
+                return (bool)$value;
+            case 'integer':
+                return (int)$value;
+            case 'float':
+                return (float)$value;
+            case 'array':
+            case 'object':
+                return json_decode($value, $type === 'array');
+            default:
+                return $value;
+        }
+    }
+
+    /**
+     * Get settings by prefix
+     */
+    public function getByPrefix($prefix) {
+        $sql = "SELECT name, value, type FROM {$this->table} WHERE name LIKE ?";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$prefix . '%']);
+        $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $settings = [];
+        foreach ($results as $result) {
+            $name = str_replace($prefix, '', $result['name']);
+            $value = $this->castValue($result['value'], $result['type']);
+            $settings[$name] = $value;
+            $this->cache[$result['name']] = $value;
+        }
+
+        return $settings;
+    }
+
+    /**
+     * Check if setting exists
+     */
+    public function has($name) {
+        if (isset($this->cache[$name])) {
+            return true;
+        }
+
+        $sql = "SELECT COUNT(*) as count FROM {$this->table} WHERE name = ?";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$name]);
+        $result = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        return $result['count'] > 0;
+    }
+
+    /**
+     * Increment a numeric setting
+     */
+    public function increment($name, $amount = 1) {
+        $sql = "UPDATE {$this->table} SET value = value + ? WHERE name = ? AND (type = 'integer' OR type = 'float')";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute([$amount, $name]);
+
+        unset($this->cache[$name]);
+
+        return $this->get($name);
+    }
+
+    /**
+     * Decrement a numeric setting
+     */
+    public function decrement($name, $amount = 1) {
+        return $this->increment($name, -$amount);
+    }
+
+    /**
+     * Get settings for module
+     */
+    public function getModuleSettings($module) {
+        return $this->getByPrefix("module_{$module}_");
+    }
+
+    /**
+     * Set settings for module
+     */
+    public function setModuleSettings($module, array $settings) {
+        $prefix = "module_{$module}_";
+        $prefixedSettings = [];
+
+        foreach ($settings as $key => $value) {
+            $prefixedSettings[$prefix . $key] = $value;
+        }
+
+        return $this->setMany($prefixedSettings);
     }
 }
